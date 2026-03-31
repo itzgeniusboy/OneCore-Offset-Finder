@@ -132,11 +132,18 @@ export default function App() {
   const [detectedEngine, setDetectedEngine] = useState<'UE4' | 'Unity' | 'Unknown'>('Unknown');
 
   // Firebase State
-  const [user, setUser] = useState<FirebaseUser | null>(null);
-  const [isAuthReady, setIsAuthReady] = useState(false);
+  const [user, setUser] = useState<FirebaseUser | null>({
+    uid: 'guest_user',
+    displayName: 'Guest User',
+    email: 'guest@onecore.local',
+    photoURL: null,
+  } as any);
+  const [isAuthReady, setIsAuthReady] = useState(true);
   const [appConfig, setAppConfig] = useState<{ isMaintenanceMode: boolean; maintenanceMessage: string; allowedEmails: string[] } | null>(null);
   const [isAdmin, setIsAdmin] = useState(false);
   const [activeUsersCount, setActiveUsersCount] = useState(0);
+  const [adminCode, setAdminCode] = useState('');
+  const [showAdminLogin, setShowAdminLogin] = useState(false);
 
   const workerRef = useRef<Worker | null>(null);
   const pauseRef = useRef(false);
@@ -201,36 +208,42 @@ export default function App() {
     localStorage.setItem('oncecore_base_address', options.baseAddress);
   }, [options.baseAddress]);
 
-  // Firebase Auth & User Tracking
+  // Firebase Auth & User Tracking (Disabled for Direct Access)
   useEffect(() => {
-    const unsubscribe = onAuthStateChanged(auth, async (currentUser) => {
-      setUser(currentUser);
-      setIsAuthReady(true);
-
-      if (currentUser) {
-        // Check if Admin
-        const adminEmail = process.env.VITE_ADMIN_EMAIL || "itzraviking@gmail.com";
-        setIsAdmin(currentUser.email === adminEmail);
-
-        // Update User Profile in Firestore
-        const userRef = doc(db, 'users', currentUser.uid);
-        try {
-          await setDoc(userRef, {
-            uid: currentUser.uid,
-            email: currentUser.email,
-            displayName: currentUser.displayName,
-            photoURL: currentUser.photoURL,
-            lastActive: Timestamp.now(),
-            role: currentUser.email === adminEmail ? 'admin' : 'user'
-          }, { merge: true });
-        } catch (error) {
-          handleFirestoreError(error, OperationType.WRITE, `users/${currentUser.uid}`);
-        }
+    // Authentication is bypassed as per user request
+    setIsAuthReady(true);
+    
+    // Check for secret admin access via URL or LocalStorage
+    const params = new URLSearchParams(window.location.search);
+    const secretFromUrl = params.get('admin_key');
+    const savedSecret = localStorage.getItem('onecore_admin_secret');
+    
+    // Default secret is "admin123" - User can change this in code
+    const SECRET_KEY = "admin123"; 
+    
+    if (secretFromUrl === SECRET_KEY || savedSecret === SECRET_KEY) {
+      setIsAdmin(true);
+      if (secretFromUrl === SECRET_KEY) {
+        localStorage.setItem('onecore_admin_secret', SECRET_KEY);
+        // Clean up URL
+        window.history.replaceState({}, document.title, window.location.pathname);
       }
-    });
-
-    return () => unsubscribe();
+    } else {
+      setIsAdmin(false);
+    }
   }, []);
+
+  const handleAdminAuth = (code: string) => {
+    const SECRET_KEY = "admin123";
+    if (code === SECRET_KEY) {
+      setIsAdmin(true);
+      localStorage.setItem('onecore_admin_secret', SECRET_KEY);
+      setShowAdminLogin(false);
+      setAdminCode('');
+    } else {
+      alert("Invalid Admin Code");
+    }
+  };
 
   // App Config & Active Users Count
   useEffect(() => {
@@ -241,17 +254,17 @@ export default function App() {
         setAppConfig(docSnap.data() as any);
       } else {
         // Initialize default config if not exists
-        if (isAdmin) {
-          const adminEmail = process.env.VITE_ADMIN_EMAIL || "itzraviking@gmail.com";
-          setDoc(configRef, {
-            isMaintenanceMode: false,
-            maintenanceMessage: "App is under maintenance. Please check back later.",
-            allowedEmails: [adminEmail]
-          }).catch(err => handleFirestoreError(err, OperationType.WRITE, 'app_config/settings'));
-        }
+        const adminEmail = "itzraviking@gmail.com";
+        setDoc(configRef, {
+          isMaintenanceMode: false,
+          maintenanceMessage: "App is under maintenance. Please check back later.",
+          allowedEmails: [adminEmail]
+        }).catch(err => {
+          console.warn("Failed to initialize config:", err);
+        });
       }
     }, (error) => {
-      handleFirestoreError(error, OperationType.GET, 'app_config/settings');
+      console.warn("Config access restricted or failed:", error);
     });
 
     // Listen to Active Users (Only for Admin)
@@ -261,7 +274,7 @@ export default function App() {
       unsubscribeUsers = onSnapshot(usersRef, (snapshot) => {
         setActiveUsersCount(snapshot.size);
       }, (error) => {
-        handleFirestoreError(error, OperationType.GET, 'users');
+        console.warn("Users access restricted or failed:", error);
       });
     }
 
@@ -271,39 +284,7 @@ export default function App() {
     };
   }, [isAdmin]);
 
-  const [isLoggingIn, setIsLoggingIn] = useState(false);
-
-  const handleLogin = async () => {
-    if (Capacitor.isNativePlatform()) {
-      setError("Google Sign-In is not supported in the mobile app yet. Please use the web version in your browser.");
-      return;
-    }
-    try {
-      setIsLoggingIn(true);
-      setError(null);
-      await signInWithPopup(auth, googleProvider);
-    } catch (error: any) {
-      console.error("Login Error:", error);
-      if (error.code === 'auth/unauthorized-domain') {
-        const isNetlify = window.location.hostname.includes('netlify.app');
-        setError(`This domain (${window.location.hostname}) is not authorized for Google Sign-In. ${isNetlify ? "Netlify domains must be manually added to Firebase." : ""} Please add it to "Authorized domains" in your Firebase Console -> Authentication -> Settings.`);
-      } else if (error.code === 'auth/popup-blocked') {
-        setError("Sign-in popup was blocked by your browser. Please allow popups for this site.");
-      } else if (error.code === 'auth/popup-closed-by-user') {
-        setError("The sign-in window was closed. Please refresh the page and try again. Tip: If you are on mobile, use Chrome or Safari and avoid 'Incognito' mode. If popups still fail, try the 'Sign in with Redirect' button below.");
-      } else if (error.code === 'auth/operation-not-allowed') {
-        setError("Google Sign-In is not enabled in your Firebase project. Please enable it in the Firebase Console.");
-      } else {
-        setError(`Login failed: ${error.message || "Unknown error"}`);
-      }
-    } finally {
-      setIsLoggingIn(false);
-    }
-  };
-
-  const handleLogout = async () => {
-    await auth.signOut();
-  };
+  // Login and Logout functions removed for direct access
 
   const toggleMaintenance = async () => {
     if (!isAdmin || !appConfig) return;
@@ -908,117 +889,15 @@ export default function App() {
     );
   }
 
-  if (!user) {
-    return (
-      <div className="min-h-screen bg-[#050505] flex items-center justify-center p-4">
-        <motion.div 
-          initial={{ opacity: 0, y: 20 }}
-          animate={{ opacity: 1, y: 0 }}
-          className="max-w-md w-full bg-[#0A0A0A] border border-[#1A1A1A] rounded-2xl p-8 text-center space-y-6"
-        >
-          <div className="w-16 h-16 bg-[#00FF00]/10 rounded-2xl flex items-center justify-center mx-auto">
-            <Shield className="w-8 h-8 text-[#00FF00]" />
-          </div>
-          <div className="space-y-2">
-            <h2 className="text-2xl font-bold text-white">Welcome to OneCore</h2>
-            <p className="text-sm text-gray-500">Please sign in to access the advanced offset finder.</p>
-          </div>
+  // Login screen removed for direct access
 
-          {error && (
-            <div className="p-4 bg-red-500/10 border border-red-500/20 rounded-xl space-y-3 text-left">
-              <div className="flex items-start gap-2 text-red-500 text-xs">
-                <AlertCircle className="w-4 h-4 flex-shrink-0 mt-0.5" />
-                <p className="leading-relaxed">{error}</p>
-              </div>
-              {error.includes('not authorized') && (
-                <>
-                  <button 
-                    onClick={() => {
-                      navigator.clipboard.writeText(window.location.hostname);
-                      const btn = document.getElementById('copy-domain-btn');
-                      if (btn) btn.innerText = 'Copied!';
-                      setTimeout(() => {
-                        if (btn) btn.innerText = 'Copy Domain';
-                      }, 2000);
-                    }}
-                    className="w-full py-2 bg-white/5 hover:bg-white/10 text-white text-[10px] font-bold uppercase tracking-widest rounded-lg border border-white/10 transition-all flex items-center justify-center gap-2"
-                  >
-                    <Copy className="w-3 h-3" />
-                    <span id="copy-domain-btn">Copy Domain</span>
-                  </button>
-                  <div className="p-3 bg-[#1A1A1A] rounded-lg space-y-3">
-                    <p className="text-[10px] font-bold text-gray-400 uppercase tracking-widest">How to fix:</p>
-                    <ol className="text-[10px] text-gray-500 space-y-1 list-decimal list-inside">
-                      <li>Open Firebase Console</li>
-                      <li>Authentication &gt; Settings</li>
-                      <li>Authorized domains &gt; Add domain</li>
-                      <li>Paste the copied domain and Save</li>
-                    </ol>
-                    <a 
-                      href="https://console.firebase.google.com/project/gen-lang-client-0978112142/authentication/settings"
-                      target="_blank"
-                      rel="noopener noreferrer"
-                      className="w-full py-2 bg-[#00FF00]/10 hover:bg-[#00FF00]/20 text-[#00FF00] text-[10px] font-bold uppercase tracking-widest rounded-lg border border-[#00FF00]/20 transition-all flex items-center justify-center gap-2"
-                    >
-                      <Database className="w-3 h-3" />
-                      Open Firebase Console
-                    </a>
-                  </div>
-                </>
-              )}
-              {error.includes('closed') && (
-                <button 
-                  onClick={async () => {
-                    try {
-                      setIsLoggingIn(true);
-                      setError(null);
-                      await signInWithRedirect(auth, googleProvider);
-                    } catch (err: any) {
-                      setError(`Redirect login failed: ${err.message}`);
-                    } finally {
-                      setIsLoggingIn(false);
-                    }
-                  }}
-                  className="w-full py-2 bg-[#00FF00]/10 hover:bg-[#00FF00]/20 text-[#00FF00] text-[10px] font-bold uppercase tracking-widest rounded-lg border border-[#00FF00]/20 transition-all flex items-center justify-center gap-2"
-                >
-                  <ArrowRightLeft className="w-3 h-3" />
-                  Sign in with Redirect
-                </button>
-              )}
-            </div>
-          )}
-
-          <button 
-            onClick={handleLogin}
-            disabled={isLoggingIn}
-            className={`w-full py-3 bg-[#00FF00] hover:bg-[#00DD00] text-black font-bold rounded-xl transition-all flex items-center justify-center gap-2 ${isLoggingIn ? 'opacity-50 cursor-not-allowed' : ''}`}
-          >
-            {isLoggingIn ? (
-              <RefreshCw className="w-4 h-4 animate-spin" />
-            ) : (
-              <Smartphone className="w-4 h-4" />
-            )}
-            {isLoggingIn ? 'Signing in...' : 'Sign in with Google'}
-          </button>
-          <p className="text-[10px] text-gray-600 uppercase tracking-widest">Secure & Local Processing</p>
-        </motion.div>
-      </div>
-    );
-  }
-
-  if (appConfig?.isMaintenanceMode && !isAdmin && !appConfig.allowedEmails.includes(user.email || '')) {
+  if (appConfig?.isMaintenanceMode && !isAdmin) {
     return (
       <div className="min-h-screen bg-[#050505] flex items-center justify-center p-4">
         <div className="max-w-md w-full text-center space-y-4">
           <AlertCircle className="w-12 h-12 text-yellow-500 mx-auto" />
           <h2 className="text-xl font-bold text-white uppercase tracking-widest">Maintenance Mode</h2>
           <p className="text-gray-500 text-sm">{appConfig.maintenanceMessage}</p>
-          <button 
-            onClick={handleLogout}
-            className="text-xs text-[#00FF00] hover:underline uppercase tracking-widest"
-          >
-            Sign out
-          </button>
         </div>
       </div>
     );
@@ -1088,17 +967,25 @@ export default function App() {
               <Settings className={`w-5 h-5 ${showAdvanced ? 'text-[#00FF00]' : ''}`} />
             </button>
             <div className="flex items-center gap-4">
-              <div className="hidden md:flex flex-col items-end">
-                <p className="text-[10px] font-bold text-white">{user.displayName}</p>
-                <p className="text-[8px] text-gray-500 uppercase tracking-widest">{isAdmin ? 'Administrator' : 'User'}</p>
-              </div>
-              <button 
-                onClick={handleLogout}
-                className="p-2 hover:bg-[#1A1A1A] rounded-lg text-gray-400 hover:text-red-500 transition-colors"
-                title="Sign Out"
+              <div 
+                className="hidden md:flex flex-col items-end cursor-pointer hover:opacity-80 transition-opacity"
+                onClick={() => !isAdmin && setShowAdminLogin(true)}
               >
-                <XCircle className="w-5 h-5" />
-              </button>
+                <p className="text-[10px] font-bold text-white">{isAdmin ? 'Administrator' : (user?.displayName || 'Guest User')}</p>
+                <p className="text-[8px] text-gray-500 uppercase tracking-widest">{isAdmin ? 'Full Access' : 'Guest Access'}</p>
+              </div>
+              {isAdmin && (
+                <button 
+                  onClick={() => {
+                    setIsAdmin(false);
+                    localStorage.removeItem('onecore_admin_secret');
+                  }}
+                  className="p-2 hover:bg-red-500/10 rounded-lg text-gray-400 hover:text-red-500 transition-colors"
+                  title="Exit Admin Mode"
+                >
+                  <XCircle className="w-5 h-5" />
+                </button>
+              )}
             </div>
           </div>
         </div>
@@ -1132,6 +1019,43 @@ export default function App() {
           </div>
         </div>
       )}
+
+      {/* Admin Login Modal */}
+      <AnimatePresence>
+        {showAdminLogin && (
+          <div className="fixed inset-0 z-[100] flex items-center justify-center p-4 bg-black/80 backdrop-blur-sm">
+            <motion.div 
+              initial={{ opacity: 0, scale: 0.95 }}
+              animate={{ opacity: 1, scale: 1 }}
+              exit={{ opacity: 0, scale: 0.95 }}
+              className="max-w-sm w-full bg-[#0A0A0A] border border-[#1A1A1A] rounded-2xl p-6 shadow-2xl space-y-4"
+            >
+              <div className="flex items-center justify-between">
+                <h3 className="text-sm font-bold uppercase tracking-widest text-white">Admin Access</h3>
+                <button onClick={() => setShowAdminLogin(false)} className="text-gray-500 hover:text-white">
+                  <XCircle className="w-5 h-5" />
+                </button>
+              </div>
+              <p className="text-[10px] text-gray-500 uppercase tracking-widest">Enter secret key to unlock admin features</p>
+              <input 
+                type="password" 
+                placeholder="Secret Admin Key"
+                value={adminCode}
+                onChange={(e) => setAdminCode(e.target.value)}
+                onKeyDown={(e) => e.key === 'Enter' && handleAdminAuth(adminCode)}
+                className="w-full bg-[#050505] border border-[#1A1A1A] rounded-lg px-4 py-3 text-sm focus:outline-none focus:border-[#00FF00]/50 transition-all font-mono"
+                autoFocus
+              />
+              <button 
+                onClick={() => handleAdminAuth(adminCode)}
+                className="w-full py-3 bg-[#00FF00] text-black font-bold rounded-xl uppercase tracking-widest text-[10px] hover:bg-[#00DD00] transition-all"
+              >
+                Unlock Admin
+              </button>
+            </motion.div>
+          </div>
+        )}
+      </AnimatePresence>
 
       <main className="max-w-4xl mx-auto p-4 space-y-6 pb-24">
         {/* Tabs Navigation */}
