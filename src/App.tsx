@@ -7,6 +7,7 @@ import {
   db, 
   googleProvider, 
   signInWithPopup, 
+  signInWithRedirect,
   onAuthStateChanged, 
   FirebaseUser, 
   doc, 
@@ -288,6 +289,8 @@ export default function App() {
         setError(`This domain (${window.location.hostname}) is not authorized for Google Sign-In. ${isNetlify ? "Netlify domains must be manually added to Firebase." : ""} Please add it to "Authorized domains" in your Firebase Console -> Authentication -> Settings.`);
       } else if (error.code === 'auth/popup-blocked') {
         setError("Sign-in popup was blocked by your browser. Please allow popups for this site.");
+      } else if (error.code === 'auth/popup-closed-by-user') {
+        setError("The sign-in window was closed. Please refresh the page and try again. Tip: If you are on mobile, use Chrome or Safari and avoid 'Incognito' mode. If popups still fail, try the 'Sign in with Redirect' button below.");
       } else if (error.code === 'auth/operation-not-allowed') {
         setError("Google Sign-In is not enabled in your Firebase project. Please enable it in the Firebase Console.");
       } else {
@@ -943,7 +946,7 @@ export default function App() {
                     <Copy className="w-3 h-3" />
                     <span id="copy-domain-btn">Copy Domain</span>
                   </button>
-                  <div className="p-3 bg-[#1A1A1A] rounded-lg space-y-2">
+                  <div className="p-3 bg-[#1A1A1A] rounded-lg space-y-3">
                     <p className="text-[10px] font-bold text-gray-400 uppercase tracking-widest">How to fix:</p>
                     <ol className="text-[10px] text-gray-500 space-y-1 list-decimal list-inside">
                       <li>Open Firebase Console</li>
@@ -951,8 +954,36 @@ export default function App() {
                       <li>Authorized domains &gt; Add domain</li>
                       <li>Paste the copied domain and Save</li>
                     </ol>
+                    <a 
+                      href="https://console.firebase.google.com/project/gen-lang-client-0978112142/authentication/settings"
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="w-full py-2 bg-[#00FF00]/10 hover:bg-[#00FF00]/20 text-[#00FF00] text-[10px] font-bold uppercase tracking-widest rounded-lg border border-[#00FF00]/20 transition-all flex items-center justify-center gap-2"
+                    >
+                      <Database className="w-3 h-3" />
+                      Open Firebase Console
+                    </a>
                   </div>
                 </>
+              )}
+              {error.includes('closed') && (
+                <button 
+                  onClick={async () => {
+                    try {
+                      setIsLoggingIn(true);
+                      setError(null);
+                      await signInWithRedirect(auth, googleProvider);
+                    } catch (err: any) {
+                      setError(`Redirect login failed: ${err.message}`);
+                    } finally {
+                      setIsLoggingIn(false);
+                    }
+                  }}
+                  className="w-full py-2 bg-[#00FF00]/10 hover:bg-[#00FF00]/20 text-[#00FF00] text-[10px] font-bold uppercase tracking-widest rounded-lg border border-[#00FF00]/20 transition-all flex items-center justify-center gap-2"
+                >
+                  <ArrowRightLeft className="w-3 h-3" />
+                  Sign in with Redirect
+                </button>
               )}
             </div>
           )}
@@ -1000,35 +1031,37 @@ export default function App() {
       <header className="border-b border-[#1A1A1A] p-4 sticky top-0 bg-[#050505]/80 backdrop-blur-md z-50">
         <div className="max-w-4xl mx-auto flex items-center justify-between">
           <div className="flex items-center gap-3">
-            <div className="w-12 h-12 flex-shrink-0 bg-[#00FF00] rounded-md flex items-center justify-center shadow-[0_0_15px_rgba(0,255,0,0.3)] aspect-square">
-              <Zap className="text-black w-8 h-8" />
+            <div className="w-10 h-10 flex-shrink-0 bg-[#00FF00] rounded-lg flex items-center justify-center shadow-[0_0_15px_rgba(0,255,0,0.3)]">
+              <Zap className="text-black w-6 h-6" />
             </div>
-            <div>
-              <h1 className="flex flex-col leading-none mb-1">
+            <div className="flex-shrink-0">
+              <h1 className="flex flex-col leading-none">
                 <span className="text-xl font-black tracking-tighter">OneCore</span>
                 <span className="text-[10px] font-bold tracking-[0.25em] text-[#00FF00] uppercase">Offset Finder</span>
               </h1>
-              <div className="flex flex-col sm:flex-row sm:items-center gap-1 sm:gap-3">
-                <p className="text-[10px] uppercase tracking-[0.2em] text-gray-500 font-mono">Advanced Offset Analysis Tool</p>
-                {detectedEngine !== 'Unknown' && (
-                  <span className="px-2 py-0.5 bg-[#00FF00]/20 text-[#00FF00] text-[8px] font-bold rounded border border-[#00FF00]/30 uppercase tracking-widest">
-                    {detectedEngine} Engine
-                  </span>
-                )}
-                <a 
-                  href="https://t.me/L359D" 
-                  target="_blank" 
-                  rel="noopener noreferrer"
-                  className="flex items-center gap-1.5 text-[10px] font-bold text-[#00FF00]/60 hover:text-[#00FF00] transition-colors group"
-                >
-                  <svg className="w-3.5 h-3.5 fill-current" viewBox="0 0 24 24">
-                    <path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm4.64 6.8c-.15 1.58-.8 5.42-1.13 7.19-.14.75-.42 1-.68 1.03-.58.05-1.02-.38-1.58-.75-.88-.58-1.38-.94-2.23-1.5-.99-.65-.35-1.01.22-1.59.15-.15 2.71-2.48 2.76-2.69.01-.03.01-.14-.07-.2-.08-.06-.19-.04-.27-.02-.11.02-1.93 1.23-5.46 3.62-.51.35-.98.52-1.4.51-.46-.01-1.35-.26-2.01-.48-.81-.27-1.45-.42-1.39-.89.03-.24.37-.49 1.02-.73 4.01-1.74 6.69-2.89 8.03-3.45 3.83-1.59 4.63-1.86 5.15-1.87.11 0 .37.03.54.17.14.12.18.28.2.45-.02.07-.02.13-.03.19z"/>
-                  </svg>
-                  <span>@L359D</span>
-                </a>
-              </div>
+            </div>
+            <div className="hidden sm:flex flex-col gap-0.5 border-l border-[#1A1A1A] pl-3 ml-1">
+              <p className="text-[9px] uppercase tracking-[0.2em] text-gray-500 font-mono">Advanced Offset Analysis</p>
+              {detectedEngine !== 'Unknown' && (
+                <span className="text-[#00FF00] text-[8px] font-bold uppercase tracking-widest flex items-center gap-1">
+                  <div className="w-1 h-1 bg-[#00FF00] rounded-full animate-pulse" />
+                  {detectedEngine} Engine
+                </span>
+              )}
+              <a 
+                href="https://t.me/L359D" 
+                target="_blank" 
+                rel="noopener noreferrer"
+                className="flex items-center gap-1 text-[8px] font-bold text-gray-500 hover:text-[#00FF00] transition-colors uppercase tracking-widest"
+              >
+                <svg className="w-2.5 h-2.5 fill-current" viewBox="0 0 24 24">
+                  <path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm4.64 6.8c-.15 1.58-.8 5.42-1.13 7.19-.14.75-.42 1-.68 1.03-.58.05-1.02-.38-1.58-.75-.88-.58-1.38-.94-2.23-1.5-.99-.65-.35-1.01.22-1.59.15-.15 2.71-2.48 2.76-2.69.01-.03.01-.14-.07-.2-.08-.06-.19-.04-.27-.02-.11.02-1.93 1.23-5.46 3.62-.51.35-.98.52-1.4.51-.46-.01-1.35-.26-2.01-.48-.81-.27-1.45-.42-1.39-.89.03-.24.37-.49 1.02-.73 4.01-1.74 6.69-2.89 8.03-3.45 3.83-1.59 4.63-1.86 5.15-1.87.11 0 .37.03.54.17.14.12.18.28.2.45-.02.07-.02.13-.03.19z"/>
+                </svg>
+                <span>Support</span>
+              </a>
             </div>
           </div>
+          
           <div className="flex items-center gap-2">
             <button 
               onClick={() => setOffsetDisplayMode(prev => prev === 'hex' ? 'dec' : prev === 'dec' ? 'real' : 'hex')}
