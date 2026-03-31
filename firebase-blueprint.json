@@ -1,0 +1,39 @@
+{
+  "entities": {
+    "User": {
+      "title": "User",
+      "description": "Represents a user of the application.",
+      "type": "object",
+      "properties": {
+        "uid": { "type": "string", "description": "The unique identifier for the user." },
+        "email": { "type": "string", "description": "The email address of the user." },
+        "displayName": { "type": "string", "description": "The display name of the user." },
+        "photoURL": { "type": "string", "description": "The URL of the user's profile picture." },
+        "lastActive": { "type": "string", "format": "date-time", "description": "The last time the user was active." },
+        "role": { "type": "string", "enum": ["admin", "user"], "description": "The role of the user." }
+      },
+      "required": ["uid", "email", "role"]
+    },
+    "AppConfig": {
+      "title": "AppConfig",
+      "description": "Global configuration for the application.",
+      "type": "object",
+      "properties": {
+        "isMaintenanceMode": { "type": "boolean", "description": "Whether the app is in maintenance mode." },
+        "maintenanceMessage": { "type": "string", "description": "The message to display during maintenance." },
+        "allowedEmails": { "type": "array", "items": { "type": "string" }, "description": "List of emails allowed to bypass maintenance." }
+      },
+      "required": ["isMaintenanceMode"]
+    }
+  },
+  "firestore": {
+    "/users/{userId}": {
+      "schema": "User",
+      "description": "User profiles and metadata."
+    },
+    "/app_config/settings": {
+      "schema": "AppConfig",
+      "description": "Global application settings."
+    }
+  }
+}

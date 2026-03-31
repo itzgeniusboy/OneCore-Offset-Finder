@@ -1,0 +1,90 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    // ===============================================================
+    // Assumed Data Model
+    // ===============================================================
+    //
+    // Collection: users
+    // Document ID: {userId}
+    // Fields:
+    //   - uid: string (required) - The unique identifier for the user.
+    //   - email: string (required) - The email address of the user.
+    //   - displayName: string (optional) - The display name of the user.
+    //   - photoURL: string (optional) - The URL of the user's profile picture.
+    //   - lastActive: timestamp (optional) - The last time the user was active.
+    //   - role: string (required, enum: ['admin', 'user']) - The role of the user.
+    //
+    // Collection: app_config
+    // Document ID: settings
+    // Fields:
+    //   - isMaintenanceMode: bool (required) - Whether the app is in maintenance mode.
+    //   - maintenanceMessage: string (optional) - The message to display during maintenance.
+    //   - allowedEmails: list (optional) - List of emails allowed to bypass maintenance.
+    //
+    // ===============================================================
+
+    // ===============================================================
+    // Helper Functions
+    // ===============================================================
+    
+    function isAuthenticated() {
+      return request.auth != null;
+    }
+
+    function isOwner(userId) {
+      return isAuthenticated() && request.auth.uid == userId;
+    }
+
+    function isAdmin() {
+      return isAuthenticated() && 
+        (get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role == 'admin' || 
+         (request.auth.token.email == "itzraviking@gmail.com" && request.auth.token.email_verified == true));
+    }
+
+    function isValidUser(data) {
+      return data.keys().hasAll(['uid', 'email', 'role']) &&
+             data.uid is string && data.uid.size() > 0 &&
+             data.email is string && data.email.size() > 0 &&
+             data.role in ['admin', 'user'];
+    }
+
+    function isValidAppConfig(data) {
+      return data.keys().hasAll(['isMaintenanceMode']) &&
+             data.isMaintenanceMode is bool;
+    }
+
+    // ===============================================================
+    // Rules
+    // ===============================================================
+
+    match /users/{userId} {
+      // Users can read their own profile. Admins can read all profiles.
+      allow read: if isOwner(userId) || isAdmin();
+      
+      // Users can create their own profile, but only as a 'user' role unless they are an admin.
+      allow create: if isOwner(userId) && isValidUser(request.resource.data) && 
+                      (request.resource.data.role == 'user' || isAdmin());
+      
+      // Users can update their own profile, but cannot change their role unless they are an admin.
+      allow update: if isOwner(userId) && isValidUser(request.resource.data) && 
+                      (request.resource.data.role == resource.data.role || isAdmin());
+      
+      // Only admins can delete profiles.
+      allow delete: if isAdmin();
+    }
+
+    match /app_config/settings {
+      // Everyone can read the app config to check for maintenance mode.
+      allow read: if true;
+      
+      // Only admins can update the app config.
+      allow write: if isAdmin() && isValidAppConfig(request.resource.data);
+    }
+
+    // Default deny
+    match /{path=**} {
+      allow read, write: if false;
+    }
+  }
+}

@@ -1,5 +1,22 @@
 import React, { useState, useRef, useEffect, useMemo } from 'react';
 import { Virtuoso } from 'react-virtuoso';
+import ErrorBoundary from './components/ErrorBoundary';
+import { 
+  auth, 
+  db, 
+  googleProvider, 
+  signInWithPopup, 
+  onAuthStateChanged, 
+  FirebaseUser, 
+  doc, 
+  setDoc, 
+  onSnapshot, 
+  updateDoc, 
+  OperationType, 
+  handleFirestoreError,
+  Timestamp,
+  collection
+} from './firebase';
 import { 
   Upload, 
   Play, 
@@ -112,6 +129,13 @@ export default function App() {
   const [showFavoritesOnly, setShowFavoritesOnly] = useState(false);
   const [detectedEngine, setDetectedEngine] = useState<'UE4' | 'Unity' | 'Unknown'>('Unknown');
 
+  // Firebase State
+  const [user, setUser] = useState<FirebaseUser | null>(null);
+  const [isAuthReady, setIsAuthReady] = useState(false);
+  const [appConfig, setAppConfig] = useState<{ isMaintenanceMode: boolean; maintenanceMessage: string; allowedEmails: string[] } | null>(null);
+  const [isAdmin, setIsAdmin] = useState(false);
+  const [activeUsersCount, setActiveUsersCount] = useState(0);
+
   const workerRef = useRef<Worker | null>(null);
   const pauseRef = useRef(false);
   const stopRef = useRef(false);
@@ -174,6 +198,100 @@ export default function App() {
   useEffect(() => {
     localStorage.setItem('oncecore_base_address', options.baseAddress);
   }, [options.baseAddress]);
+
+  // Firebase Auth & User Tracking
+  useEffect(() => {
+    const unsubscribe = onAuthStateChanged(auth, async (currentUser) => {
+      setUser(currentUser);
+      setIsAuthReady(true);
+
+      if (currentUser) {
+        // Check if Admin
+        const adminEmail = process.env.VITE_ADMIN_EMAIL || "itzraviking@gmail.com";
+        setIsAdmin(currentUser.email === adminEmail);
+
+        // Update User Profile in Firestore
+        const userRef = doc(db, 'users', currentUser.uid);
+        try {
+          await setDoc(userRef, {
+            uid: currentUser.uid,
+            email: currentUser.email,
+            displayName: currentUser.displayName,
+            photoURL: currentUser.photoURL,
+            lastActive: Timestamp.now(),
+            role: currentUser.email === adminEmail ? 'admin' : 'user'
+          }, { merge: true });
+        } catch (error) {
+          handleFirestoreError(error, OperationType.WRITE, `users/${currentUser.uid}`);
+        }
+      }
+    });
+
+    return () => unsubscribe();
+  }, []);
+
+  // App Config & Active Users Count
+  useEffect(() => {
+    // Listen to App Config
+    const configRef = doc(db, 'app_config', 'settings');
+    const unsubscribeConfig = onSnapshot(configRef, (docSnap) => {
+      if (docSnap.exists()) {
+        setAppConfig(docSnap.data() as any);
+      } else {
+        // Initialize default config if not exists
+        if (isAdmin) {
+          const adminEmail = process.env.VITE_ADMIN_EMAIL || "itzraviking@gmail.com";
+          setDoc(configRef, {
+            isMaintenanceMode: false,
+            maintenanceMessage: "App is under maintenance. Please check back later.",
+            allowedEmails: [adminEmail]
+          }).catch(err => handleFirestoreError(err, OperationType.WRITE, 'app_config/settings'));
+        }
+      }
+    }, (error) => {
+      handleFirestoreError(error, OperationType.GET, 'app_config/settings');
+    });
+
+    // Listen to Active Users (Only for Admin)
+    let unsubscribeUsers = () => {};
+    if (isAdmin) {
+      const usersRef = collection(db, 'users');
+      unsubscribeUsers = onSnapshot(usersRef, (snapshot) => {
+        setActiveUsersCount(snapshot.size);
+      }, (error) => {
+        handleFirestoreError(error, OperationType.GET, 'users');
+      });
+    }
+
+    return () => {
+      unsubscribeConfig();
+      unsubscribeUsers();
+    };
+  }, [isAdmin]);
+
+  const handleLogin = async () => {
+    try {
+      await signInWithPopup(auth, googleProvider);
+    } catch (error) {
+      setError("Login failed. Please try again.");
+    }
+  };
+
+  const handleLogout = async () => {
+    await auth.signOut();
+  };
+
+  const toggleMaintenance = async () => {
+    if (!isAdmin || !appConfig) return;
+    const configRef = doc(db, 'app_config', 'settings');
+    try {
+      await updateDoc(configRef, {
+        isMaintenanceMode: !appConfig.isMaintenanceMode
+      });
+    } catch (error) {
+      handleFirestoreError(error, OperationType.UPDATE, 'app_config/settings');
+    }
+  };
 
   useEffect(() => {
     // Initialize worker
@@ -755,17 +873,77 @@ export default function App() {
 
   const quickKeywords = ['Enemy', 'Player', 'Health', 'Ammo', 'Damage', 'Weapon', 'Speed', 'Recoil', 'ESP', 'Unity', 'GWorld', 'GNames'];
 
+  if (!isAuthReady) {
+    return (
+      <div className="min-h-screen bg-[#050505] flex items-center justify-center">
+        <div className="flex flex-col items-center gap-4">
+          <RefreshCw className="w-8 h-8 text-[#00FF00] animate-spin" />
+          <p className="text-xs uppercase tracking-widest text-gray-500 font-mono">Initializing OneCore...</p>
+        </div>
+      </div>
+    );
+  }
+
+  if (!user) {
+    return (
+      <div className="min-h-screen bg-[#050505] flex items-center justify-center p-4">
+        <motion.div 
+          initial={{ opacity: 0, y: 20 }}
+          animate={{ opacity: 1, y: 0 }}
+          className="max-w-md w-full bg-[#0A0A0A] border border-[#1A1A1A] rounded-2xl p-8 text-center space-y-6"
+        >
+          <div className="w-16 h-16 bg-[#00FF00]/10 rounded-2xl flex items-center justify-center mx-auto">
+            <Shield className="w-8 h-8 text-[#00FF00]" />
+          </div>
+          <div className="space-y-2">
+            <h2 className="text-2xl font-bold text-white">Welcome to OneCore</h2>
+            <p className="text-sm text-gray-500">Please sign in to access the advanced offset finder.</p>
+          </div>
+          <button 
+            onClick={handleLogin}
+            className="w-full py-3 bg-[#00FF00] hover:bg-[#00DD00] text-black font-bold rounded-xl transition-all flex items-center justify-center gap-2"
+          >
+            <Smartphone className="w-4 h-4" /> Sign in with Google
+          </button>
+          <p className="text-[10px] text-gray-600 uppercase tracking-widest">Secure & Local Processing</p>
+        </motion.div>
+      </div>
+    );
+  }
+
+  if (appConfig?.isMaintenanceMode && !isAdmin && !appConfig.allowedEmails.includes(user.email || '')) {
+    return (
+      <div className="min-h-screen bg-[#050505] flex items-center justify-center p-4">
+        <div className="max-w-md w-full text-center space-y-4">
+          <AlertCircle className="w-12 h-12 text-yellow-500 mx-auto" />
+          <h2 className="text-xl font-bold text-white uppercase tracking-widest">Maintenance Mode</h2>
+          <p className="text-gray-500 text-sm">{appConfig.maintenanceMessage}</p>
+          <button 
+            onClick={handleLogout}
+            className="text-xs text-[#00FF00] hover:underline uppercase tracking-widest"
+          >
+            Sign out
+          </button>
+        </div>
+      </div>
+    );
+  }
+
   return (
-    <div className="min-h-screen bg-[#050505] text-white font-sans selection:bg-[#00FF00] selection:text-black">
+    <ErrorBoundary>
+      <div className="min-h-screen bg-[#050505] text-white font-sans selection:bg-[#00FF00] selection:text-black">
       {/* Header */}
       <header className="border-b border-[#1A1A1A] p-4 sticky top-0 bg-[#050505]/80 backdrop-blur-md z-50">
         <div className="max-w-4xl mx-auto flex items-center justify-between">
           <div className="flex items-center gap-3">
-            <div className="w-10 h-10 bg-[#00FF00] rounded-lg flex items-center justify-center shadow-[0_0_15px_rgba(0,255,0,0.3)]">
-              <Zap className="text-black w-6 h-6" />
+            <div className="w-12 h-12 flex-shrink-0 bg-[#00FF00] rounded-md flex items-center justify-center shadow-[0_0_15px_rgba(0,255,0,0.3)] aspect-square">
+              <Zap className="text-black w-8 h-8" />
             </div>
             <div>
-              <h1 className="text-xl font-bold tracking-tight">OneCore <span className="text-[#00FF00]">Offset Finder</span></h1>
+              <h1 className="flex flex-col leading-none mb-1">
+                <span className="text-xl font-black tracking-tighter">OneCore</span>
+                <span className="text-[10px] font-bold tracking-[0.25em] text-[#00FF00] uppercase">Offset Finder</span>
+              </h1>
               <div className="flex flex-col sm:flex-row sm:items-center gap-1 sm:gap-3">
                 <p className="text-[10px] uppercase tracking-[0.2em] text-gray-500 font-mono">Advanced Offset Analysis Tool</p>
                 {detectedEngine !== 'Unknown' && (
@@ -812,9 +990,51 @@ export default function App() {
             >
               <Settings className={`w-5 h-5 ${showAdvanced ? 'text-[#00FF00]' : ''}`} />
             </button>
+            <div className="flex items-center gap-4">
+              <div className="hidden md:flex flex-col items-end">
+                <p className="text-[10px] font-bold text-white">{user.displayName}</p>
+                <p className="text-[8px] text-gray-500 uppercase tracking-widest">{isAdmin ? 'Administrator' : 'User'}</p>
+              </div>
+              <button 
+                onClick={handleLogout}
+                className="p-2 hover:bg-[#1A1A1A] rounded-lg text-gray-400 hover:text-red-500 transition-colors"
+                title="Sign Out"
+              >
+                <XCircle className="w-5 h-5" />
+              </button>
+            </div>
           </div>
         </div>
       </header>
+
+      {/* Admin Dashboard Overlay */}
+      {isAdmin && activeTab === 'scan' && (
+        <div className="max-w-7xl mx-auto px-4 mb-4">
+          <div className="bg-[#0A0A0A] border border-yellow-500/20 rounded-xl p-4 flex flex-wrap items-center justify-between gap-4">
+            <div className="flex items-center gap-3">
+              <div className="p-2 bg-yellow-500/10 rounded-lg">
+                <Shield className="w-4 h-4 text-yellow-500" />
+              </div>
+              <div>
+                <p className="text-xs font-bold text-white">Admin Control Panel</p>
+                <p className="text-[10px] text-gray-500 uppercase tracking-widest">{activeUsersCount} Active Users</p>
+              </div>
+            </div>
+            <div className="flex items-center gap-3">
+              <button 
+                onClick={toggleMaintenance}
+                className={`px-4 py-1.5 rounded-lg text-[10px] font-bold uppercase tracking-widest transition-all ${
+                  appConfig?.isMaintenanceMode 
+                    ? 'bg-red-500 text-white' 
+                    : 'bg-[#1A1A1A] text-gray-400 hover:text-white'
+                }`}
+              >
+                {appConfig?.isMaintenanceMode ? 'Disable Kill Switch' : 'Enable Kill Switch'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
 
       <main className="max-w-4xl mx-auto p-4 space-y-6 pb-24">
         {/* Tabs Navigation */}
@@ -1691,6 +1911,7 @@ export default function App() {
         <p className="text-[10px] text-gray-600 uppercase tracking-[0.3em]">OnceCore Offset Finder v4.0</p>
         <p className="text-[10px] text-gray-700">Ultimate Mobile Reverse Engineering Workspace</p>
       </footer>
-    </div>
+      </div>
+    </ErrorBoundary>
   );
 }
