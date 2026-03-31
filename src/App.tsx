@@ -115,20 +115,29 @@ export default function App() {
 
   // Load Database and Backup from LocalStorage
   useEffect(() => {
-    const saved = localStorage.getItem('oncecore_db');
-    if (saved) setSavedEntries(JSON.parse(saved));
+    try {
+      const saved = localStorage.getItem('oncecore_db');
+      if (saved) setSavedEntries(JSON.parse(saved));
 
-    const backup = localStorage.getItem('oncecore_backup');
-    if (backup) {
-      const data = JSON.parse(backup);
-      if (data.results) setResults(data.results);
+      const backup = localStorage.getItem('oncecore_backup');
+      if (backup) {
+        const data = JSON.parse(backup);
+        if (data.results) setResults(data.results);
+      }
+
+      const savedHistory = localStorage.getItem('oncecore_scan_history');
+      if (savedHistory) setScanHistory(JSON.parse(savedHistory));
+
+      const savedRecent = localStorage.getItem('oncecore_recent_files');
+      if (savedRecent) setRecentFiles(JSON.parse(savedRecent));
+    } catch (e) {
+      console.error('Failed to load data from localStorage:', e);
+      // Clear potentially corrupted data
+      localStorage.removeItem('oncecore_db');
+      localStorage.removeItem('oncecore_backup');
+      localStorage.removeItem('oncecore_scan_history');
+      localStorage.removeItem('oncecore_recent_files');
     }
-
-    const savedHistory = localStorage.getItem('oncecore_scan_history');
-    if (savedHistory) setScanHistory(JSON.parse(savedHistory));
-
-    const savedRecent = localStorage.getItem('oncecore_recent_files');
-    if (savedRecent) setRecentFiles(JSON.parse(savedRecent));
   }, []);
 
   // Timer for elapsed time
