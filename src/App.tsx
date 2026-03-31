@@ -79,8 +79,9 @@ export default function App() {
     removeDuplicates: true,
     resultLimit: 2000,
     searchPattern: '',
+    baseAddress: '0x0',
   });
-  const [offsetDisplayMode, setOffsetDisplayMode] = useState<'hex' | 'dec'>('hex');
+  const [offsetDisplayMode, setOffsetDisplayMode] = useState<'hex' | 'dec' | 'real'>('hex');
   const frequencyMap = useRef<Map<string, number>>(new Map());
   const [searchQuery, setSearchQuery] = useState('');
   const [copiedId, setCopiedId] = useState<string | null>(null);
@@ -106,7 +107,7 @@ export default function App() {
   const [elapsedTime, setElapsedTime] = useState(0);
   const [currentWorkspaceId, setCurrentWorkspaceId] = useState<string | null>(null);
   const [showStats, setShowStats] = useState(true);
-  const [copyFormat, setCopyFormat] = useState<'hex' | 'dec' | 'pattern' | 'cpp'>('hex');
+  const [copyFormat, setCopyFormat] = useState<'hex' | 'dec' | 'real' | 'pattern' | 'cpp'>('hex');
   const [showFavoritesOnly, setShowFavoritesOnly] = useState(false);
 
   const workerRef = useRef<Worker | null>(null);
@@ -115,29 +116,20 @@ export default function App() {
 
   // Load Database and Backup from LocalStorage
   useEffect(() => {
-    try {
-      const saved = localStorage.getItem('oncecore_db');
-      if (saved) setSavedEntries(JSON.parse(saved));
+    const saved = localStorage.getItem('oncecore_db');
+    if (saved) setSavedEntries(JSON.parse(saved));
 
-      const backup = localStorage.getItem('oncecore_backup');
-      if (backup) {
-        const data = JSON.parse(backup);
-        if (data.results) setResults(data.results);
-      }
-
-      const savedHistory = localStorage.getItem('oncecore_scan_history');
-      if (savedHistory) setScanHistory(JSON.parse(savedHistory));
-
-      const savedRecent = localStorage.getItem('oncecore_recent_files');
-      if (savedRecent) setRecentFiles(JSON.parse(savedRecent));
-    } catch (e) {
-      console.error('Failed to load data from localStorage:', e);
-      // Clear potentially corrupted data
-      localStorage.removeItem('oncecore_db');
-      localStorage.removeItem('oncecore_backup');
-      localStorage.removeItem('oncecore_scan_history');
-      localStorage.removeItem('oncecore_recent_files');
+    const backup = localStorage.getItem('oncecore_backup');
+    if (backup) {
+      const data = JSON.parse(backup);
+      if (data.results) setResults(data.results);
     }
+
+    const savedHistory = localStorage.getItem('oncecore_scan_history');
+    if (savedHistory) setScanHistory(JSON.parse(savedHistory));
+
+    const savedRecent = localStorage.getItem('oncecore_recent_files');
+    if (savedRecent) setRecentFiles(JSON.parse(savedRecent));
   }, []);
 
   // Timer for elapsed time
@@ -247,6 +239,24 @@ export default function App() {
     };
   }, [options.removeDuplicates, options.resultLimit]);
 
+  const formatHex = (num: number) => {
+    return '0x' + num.toString(16).toUpperCase().padStart(6, '0');
+  };
+
+  const getAbsoluteAddress = (offset: number) => {
+    const base = parseInt(options.baseAddress.replace('0x', ''), 16) || 0;
+    return formatHex(base + offset);
+  };
+
+  const detectModuleBase = (name: string) => {
+    const lowerName = name.toLowerCase();
+    if (lowerName.includes('libue4')) {
+      setOptions(prev => ({ ...prev, baseAddress: '0x1000000' }));
+    } else if (lowerName.includes('libil2cpp')) {
+      setOptions(prev => ({ ...prev, baseAddress: '0x2000000' }));
+    }
+  };
+
   const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     const selectedFile = e.target.files?.[0];
     if (selectedFile) {
@@ -255,6 +265,7 @@ export default function App() {
         return;
       }
       setFile(selectedFile);
+      detectModuleBase(selectedFile.name);
       setError(null);
       resetScan();
 
@@ -560,11 +571,14 @@ export default function App() {
   };
 
   const formatCopy = (result: ScanResult) => {
-    const offset = offsetDisplayMode === 'hex' ? result.hexOffset : result.offset.toString();
+    const offset = offsetDisplayMode === 'hex' ? formatHex(result.offset) : 
+                   offsetDisplayMode === 'real' ? getAbsoluteAddress(result.offset) : 
+                   result.offset.toString();
     switch (copyFormat) {
       case 'dec': return result.offset.toString();
+      case 'real': return getAbsoluteAddress(result.offset);
       case 'pattern': return generatePattern(result);
-      case 'cpp': return `uintptr_t ${result.text.replace(/[^a-zA-Z0-9]/g, '_')} = ${offsetDisplayMode === 'hex' ? result.hexOffset : result.offset};`;
+      case 'cpp': return `uintptr_t ${result.text.replace(/[^a-zA-Z0-9]/g, '_')} = ${offset};`;
       default: return offset;
     }
   };
@@ -661,15 +675,15 @@ export default function App() {
           </div>
           <div className="flex items-center gap-2">
             <button 
-              onClick={() => setOffsetDisplayMode(prev => prev === 'hex' ? 'dec' : 'hex')}
+              onClick={() => setOffsetDisplayMode(prev => prev === 'hex' ? 'dec' : prev === 'dec' ? 'real' : 'hex')}
               className={`px-3 py-1.5 rounded-lg text-[10px] font-bold uppercase tracking-widest transition-all border ${
-                offsetDisplayMode === 'hex' 
+                offsetDisplayMode !== 'dec' 
                   ? 'bg-[#00FF00]/10 border-[#00FF00]/30 text-[#00FF00]' 
                   : 'bg-[#1A1A1A] border-transparent text-gray-400'
               }`}
-              title="Toggle Hex/Decimal Display"
+              title="Toggle Hex/Decimal/Real Display"
             >
-              {offsetDisplayMode === 'hex' ? 'HEX' : 'DEC'}
+              {offsetDisplayMode === 'hex' ? 'HEX' : offsetDisplayMode === 'dec' ? 'DEC' : 'REAL'}
             </button>
             <button 
               onClick={() => setShowStats(!showStats)}
@@ -1069,6 +1083,28 @@ export default function App() {
               <div className="bg-[#0A0A0A] border border-[#1A1A1A] rounded-2xl p-6 grid grid-cols-1 sm:grid-cols-2 gap-6">
                 <div className="space-y-3">
                   <label className="text-xs font-bold text-gray-400 flex items-center gap-2">
+                    <Binary className="w-3 h-3" /> Module Base Address
+                  </label>
+                  <div className="flex gap-2">
+                    <input 
+                      type="text" 
+                      placeholder="e.g. 0x7000000000"
+                      value={options.baseAddress}
+                      onChange={(e) => setOptions(prev => ({ ...prev, baseAddress: e.target.value }))}
+                      className="flex-1 bg-[#0A0A0A] border border-[#1A1A1A] rounded-lg px-3 py-2 text-xs focus:outline-none focus:border-[#00FF00]/50 transition-all font-mono"
+                    />
+                    <button 
+                      onClick={() => detectModuleBase(file?.name || '')}
+                      className="px-3 py-1 bg-[#1A1A1A] hover:bg-[#252525] rounded-lg text-[10px] font-bold text-[#00FF00] border border-[#252525]"
+                    >
+                      Detect
+                    </button>
+                  </div>
+                  <p className="text-[10px] text-gray-600 italic">Used for Real Address calculation (Base + Offset)</p>
+                </div>
+
+                <div className="space-y-3">
+                  <label className="text-xs font-bold text-gray-400 flex items-center gap-2">
                     <Filter className="w-3 h-3" /> Minimum String Length
                   </label>
                   <input 
@@ -1385,6 +1421,7 @@ export default function App() {
                 >
                   <option value="hex">HEX</option>
                   <option value="dec">DEC</option>
+                  <option value="real">REAL</option>
                   <option value="pattern">AOB</option>
                   <option value="cpp">C++</option>
                 </select>
@@ -1501,7 +1538,10 @@ export default function App() {
                         </div>
                         <div className="flex items-center gap-3">
                           <p className={`text-[10px] font-mono uppercase tracking-wider transition-colors ${offsetDisplayMode === 'hex' ? 'text-gray-200 font-bold' : 'text-gray-600'}`}>
-                            {result.hexOffset}
+                            {formatHex(result.offset)}
+                          </p>
+                          <p className={`text-[10px] font-mono uppercase tracking-wider transition-colors ${offsetDisplayMode === 'real' ? 'text-[#00FF00] font-bold' : 'text-gray-600'}`}>
+                            {getAbsoluteAddress(result.offset)} REAL
                           </p>
                           <p className={`text-[10px] font-mono transition-colors ${offsetDisplayMode === 'dec' ? 'text-gray-200 font-bold' : 'text-gray-700'}`}>
                             {result.offset} DEC

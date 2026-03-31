@@ -80,6 +80,7 @@ export interface ScanOptions {
   removeDuplicates: boolean;
   resultLimit: number;
   searchPattern?: string; // AOB pattern to search for
+  baseAddress: string; // Module base address for absolute calculation
 }
 
 export interface WorkerMessage {
