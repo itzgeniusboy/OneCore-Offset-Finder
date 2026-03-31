@@ -1,4 +1,5 @@
 import React, { useState, useRef, useEffect, useMemo } from 'react';
+import { Virtuoso } from 'react-virtuoso';
 import { 
   Upload, 
   Play, 
@@ -109,6 +110,7 @@ export default function App() {
   const [showStats, setShowStats] = useState(true);
   const [copyFormat, setCopyFormat] = useState<'hex' | 'dec' | 'real' | 'pattern' | 'cpp'>('hex');
   const [showFavoritesOnly, setShowFavoritesOnly] = useState(false);
+  const [detectedEngine, setDetectedEngine] = useState<'UE4' | 'Unity' | 'Unknown'>('Unknown');
 
   const workerRef = useRef<Worker | null>(null);
   const pauseRef = useRef(false);
@@ -130,6 +132,9 @@ export default function App() {
 
     const savedRecent = localStorage.getItem('oncecore_recent_files');
     if (savedRecent) setRecentFiles(JSON.parse(savedRecent));
+
+    const savedBase = localStorage.getItem('oncecore_base_address');
+    if (savedBase) setOptions(prev => ({ ...prev, baseAddress: savedBase }));
   }, []);
 
   // Timer for elapsed time
@@ -164,6 +169,11 @@ export default function App() {
   useEffect(() => {
     localStorage.setItem('oncecore_db', JSON.stringify(savedEntries));
   }, [savedEntries]);
+
+  // Save Base Address
+  useEffect(() => {
+    localStorage.setItem('oncecore_base_address', options.baseAddress);
+  }, [options.baseAddress]);
 
   useEffect(() => {
     // Initialize worker
@@ -239,21 +249,49 @@ export default function App() {
     };
   }, [options.removeDuplicates, options.resultLimit]);
 
-  const formatHex = (num: number) => {
-    return '0x' + num.toString(16).toUpperCase().padStart(6, '0');
+  const formatHex = (num: number | bigint, padding = 6) => {
+    const hex = typeof num === 'bigint' ? num.toString(16) : num.toString(16);
+    return '0x' + hex.toUpperCase().padStart(padding, '0');
   };
 
   const getAbsoluteAddress = (offset: number) => {
-    const base = parseInt(options.baseAddress.replace('0x', ''), 16) || 0;
-    return formatHex(base + offset);
+    try {
+      const baseStr = options.baseAddress.startsWith('0x') ? options.baseAddress : '0x' + options.baseAddress;
+      const base = BigInt(baseStr);
+      const off = BigInt(offset);
+      return formatHex(base + off, 10);
+    } catch (e) {
+      return '0x0000000000';
+    }
+  };
+
+  const parseMaps = (content: string) => {
+    const lines = content.split('\n');
+    const targets = ['libUE4.so', 'libil2cpp.so'];
+    
+    for (const target of targets) {
+      // Look for the first executable segment of the target library
+      const line = lines.find(l => l.includes(target) && l.includes('r-xp'));
+      if (line) {
+        const baseAddr = line.split('-')[0];
+        setOptions(prev => ({ ...prev, baseAddress: '0x' + baseAddr }));
+        setError(`Detected ${target} base: 0x${baseAddr}`);
+        return;
+      }
+    }
+    setError('Could not find target library in maps data.');
   };
 
   const detectModuleBase = (name: string) => {
     const lowerName = name.toLowerCase();
     if (lowerName.includes('libue4')) {
       setOptions(prev => ({ ...prev, baseAddress: '0x1000000' }));
+      setDetectedEngine('UE4');
     } else if (lowerName.includes('libil2cpp')) {
       setOptions(prev => ({ ...prev, baseAddress: '0x2000000' }));
+      setDetectedEngine('Unity');
+    } else {
+      setDetectedEngine('Unknown');
     }
   };
 
@@ -642,7 +680,78 @@ export default function App() {
       r.hexOffset.toLowerCase().includes(query) ||
       (r.hints && r.hints.some(h => h.toLowerCase().includes(query)))
     );
-  }, [results, searchQuery, isCleanMode, showFavoritesOnly, isImportantOnly]);
+  }, [results, searchQuery, isCleanMode, showFavoritesOnly, isImportantOnly, options.minLength, options.maxLength]);
+
+  const Row = (index: number) => {
+    const result = filteredResults[index];
+    if (!result) return null;
+
+    return (
+      <div className="px-4 py-1.5">
+        <motion.div 
+          initial={{ opacity: 0, x: -10 }}
+          animate={{ opacity: 1, x: 0 }}
+          className={`group bg-[#050505] border rounded-xl p-4 transition-all h-full flex flex-col justify-center ${selectedIds.has(result.id) ? 'border-[#00FF00] bg-[#00FF00]/5' : 'border-[#1A1A1A] hover:border-[#00FF00]/30'}`}
+        >
+          <div className="flex items-center gap-3">
+            <div 
+              onClick={() => toggleSelection(result.id)}
+              className={`w-5 h-5 rounded border flex items-center justify-center cursor-pointer transition-all flex-shrink-0 ${selectedIds.has(result.id) ? 'bg-[#00FF00] border-[#00FF00]' : 'border-[#252525] bg-[#0A0A0A]'}`}
+            >
+              {selectedIds.has(result.id) && <Check className="w-3 h-3 text-black font-bold" />}
+            </div>
+            <div className="flex items-center justify-between flex-1 min-w-0">
+              <div className="space-y-1 flex-1 min-w-0">
+                <div className="flex items-center gap-2 flex-wrap">
+                  <p className={`text-xs font-bold tracking-tight truncate transition-colors ${(result.frequency || 0) > 5 ? 'text-yellow-400' : 'text-[#00FF00]'}`}>
+                    {result.text}
+                  </p>
+                  {result.length && <span className="text-[8px] text-gray-600 font-mono">[{result.length}]</span>}
+                  {result.frequency && result.frequency > 1 && (
+                    <span className={`text-[8px] px-1 rounded border font-bold transition-all ${
+                      result.frequency > 5 
+                        ? 'bg-yellow-400/10 border-yellow-400/30 text-yellow-400' 
+                        : 'bg-[#1A1A1A] border-[#00FF00]/20 text-[#00FF00]'
+                    }`}>
+                      x{result.frequency}
+                    </span>
+                  )}
+                  {result.isNew && <span className="text-[8px] bg-[#00FF00] text-black px-1 rounded font-bold">NEW</span>}
+                  {result.isFavorite && <Star className="w-3 h-3 text-yellow-500 fill-current" />}
+                </div>
+                <div className="flex items-center gap-3 flex-wrap">
+                  <p className={`text-[10px] font-mono uppercase tracking-wider transition-colors ${offsetDisplayMode === 'hex' ? 'text-gray-200 font-bold' : 'text-gray-600'}`}>
+                    {formatHex(result.offset)}
+                  </p>
+                  <p className={`text-[10px] font-mono uppercase tracking-wider transition-colors ${offsetDisplayMode === 'real' ? 'text-[#00FF00] font-bold' : 'text-gray-600'}`}>
+                    {getAbsoluteAddress(result.offset)} REAL
+                  </p>
+                  <p className={`text-[10px] font-mono transition-colors ${offsetDisplayMode === 'dec' ? 'text-gray-200 font-bold' : 'text-gray-700'}`}>
+                    {result.offset} DEC
+                  </p>
+                </div>
+              </div>
+            </div>
+            
+            <div className="flex gap-1 opacity-0 group-hover:opacity-100 transition-opacity flex-shrink-0">
+              <button 
+                onClick={() => toggleFavorite(result.id)}
+                className={`p-1.5 hover:bg-[#1A1A1A] rounded-lg transition-colors ${result.isFavorite ? 'text-yellow-500' : 'text-gray-400'}`}
+              >
+                <Star className={`w-3.5 h-3.5 ${result.isFavorite ? 'fill-current' : ''}`} />
+              </button>
+              <button 
+                onClick={() => copyToClipboard(formatCopy(result), `copy-${result.id}`)}
+                className="p-1.5 hover:bg-[#1A1A1A] rounded-lg text-gray-400 hover:text-[#00FF00] transition-colors"
+              >
+                {copiedId === `copy-${result.id}` ? <Check className="w-3.5 h-3.5 text-[#00FF00]" /> : <Copy className="w-3.5 h-3.5" />}
+              </button>
+            </div>
+          </div>
+        </motion.div>
+      </div>
+    );
+  };
 
   const quickKeywords = ['Enemy', 'Player', 'Health', 'Ammo', 'Damage', 'Weapon', 'Speed', 'Recoil', 'ESP', 'Unity', 'GWorld', 'GNames'];
 
@@ -659,6 +768,11 @@ export default function App() {
               <h1 className="text-xl font-bold tracking-tight">OneCore <span className="text-[#00FF00]">Offset Finder</span></h1>
               <div className="flex flex-col sm:flex-row sm:items-center gap-1 sm:gap-3">
                 <p className="text-[10px] uppercase tracking-[0.2em] text-gray-500 font-mono">Advanced Offset Analysis Tool</p>
+                {detectedEngine !== 'Unknown' && (
+                  <span className="px-2 py-0.5 bg-[#00FF00]/20 text-[#00FF00] text-[8px] font-bold rounded border border-[#00FF00]/30 uppercase tracking-widest">
+                    {detectedEngine} Engine
+                  </span>
+                )}
                 <a 
                   href="https://t.me/L359D" 
                   target="_blank" 
@@ -1093,14 +1207,16 @@ export default function App() {
                       onChange={(e) => setOptions(prev => ({ ...prev, baseAddress: e.target.value }))}
                       className="flex-1 bg-[#0A0A0A] border border-[#1A1A1A] rounded-lg px-3 py-2 text-xs focus:outline-none focus:border-[#00FF00]/50 transition-all font-mono"
                     />
-                    <button 
-                      onClick={() => detectModuleBase(file?.name || '')}
-                      className="px-3 py-1 bg-[#1A1A1A] hover:bg-[#252525] rounded-lg text-[10px] font-bold text-[#00FF00] border border-[#252525]"
-                    >
-                      Detect
-                    </button>
                   </div>
-                  <p className="text-[10px] text-gray-600 italic">Used for Real Address calculation (Base + Offset)</p>
+                  <div className="space-y-2">
+                    <p className="text-[10px] text-gray-500 uppercase font-bold">Paste /proc/self/maps content:</p>
+                    <textarea 
+                      placeholder="Paste maps data here to auto-detect base..."
+                      onChange={(e) => parseMaps(e.target.value)}
+                      className="w-full h-20 bg-[#050505] border border-[#1A1A1A] rounded-lg p-2 text-[10px] font-mono focus:outline-none focus:border-[#00FF00]/30 resize-none"
+                    />
+                  </div>
+                  <p className="text-[10px] text-gray-600 italic">REAL Mode = Base + Offset (64-bit compatible)</p>
                 </div>
 
                 <div className="space-y-3">
@@ -1493,147 +1609,19 @@ export default function App() {
             </div>
           </div>
 
-          <div id="results-list" className="flex-1 overflow-y-auto p-4 space-y-3">
+          <div id="results-list" className="flex-1 p-2">
             {filteredResults.length === 0 ? (
               <div className="h-full flex flex-col items-center justify-center text-gray-600 gap-2">
                 <Search className="w-8 h-8 opacity-20" />
                 <p className="text-xs uppercase tracking-widest">No results found</p>
               </div>
             ) : (
-              filteredResults.map((result, idx) => (
-                <motion.div 
-                  initial={{ opacity: 0, y: 10 }}
-                  animate={{ opacity: 1, y: 0 }}
-                  transition={{ delay: idx * 0.05 }}
-                  key={result.id} 
-                  className={`group bg-[#050505] border rounded-xl p-4 transition-all ${selectedIds.has(result.id) ? 'border-[#00FF00] bg-[#00FF00]/5' : 'border-[#1A1A1A] hover:border-[#00FF00]/30'}`}
-                >
-                  <div className="flex items-center gap-3">
-                    <div 
-                      onClick={() => toggleSelection(result.id)}
-                      className={`w-5 h-5 rounded border flex items-center justify-center cursor-pointer transition-all ${selectedIds.has(result.id) ? 'bg-[#00FF00] border-[#00FF00]' : 'border-[#252525] bg-[#0A0A0A]'}`}
-                    >
-                      {selectedIds.has(result.id) && <Check className="w-3 h-3 text-black font-bold" />}
-                    </div>
-                    <div className="flex items-center justify-between flex-1">
-                      <div className="space-y-1 flex-1">
-                        <div className="flex items-center gap-2">
-                          <p className={`text-xs font-bold tracking-tight transition-colors ${(result.frequency || 0) > 5 ? 'text-yellow-400' : 'text-[#00FF00]'}`}>
-                            {result.text}
-                          </p>
-                          {result.length && <span className="text-[8px] text-gray-600 font-mono">[{result.length}]</span>}
-                          {result.frequency && result.frequency > 1 && (
-                            <span className={`text-[8px] px-1 rounded border font-bold transition-all ${
-                              result.frequency > 5 
-                                ? 'bg-yellow-400/10 border-yellow-400/30 text-yellow-400' 
-                                : 'bg-[#1A1A1A] border-[#00FF00]/20 text-[#00FF00]'
-                            }`}>
-                              x{result.frequency}
-                            </span>
-                          )}
-                          {result.isNew && <span className="text-[8px] bg-[#00FF00] text-black px-1 rounded font-bold">NEW</span>}
-                          {result.status === 'removed' && <span className="text-[8px] bg-red-500 text-white px-1 rounded font-bold">REMOVED</span>}
-                          {result.status === 'changed' && <span className="text-[8px] bg-blue-500 text-white px-1 rounded font-bold">CHANGED</span>}
-                          {result.isFavorite && <Star className="w-3 h-3 text-yellow-500 fill-current" />}
-                        </div>
-                        <div className="flex items-center gap-3">
-                          <p className={`text-[10px] font-mono uppercase tracking-wider transition-colors ${offsetDisplayMode === 'hex' ? 'text-gray-200 font-bold' : 'text-gray-600'}`}>
-                            {formatHex(result.offset)}
-                          </p>
-                          <p className={`text-[10px] font-mono uppercase tracking-wider transition-colors ${offsetDisplayMode === 'real' ? 'text-[#00FF00] font-bold' : 'text-gray-600'}`}>
-                            {getAbsoluteAddress(result.offset)} REAL
-                          </p>
-                          <p className={`text-[10px] font-mono transition-colors ${offsetDisplayMode === 'dec' ? 'text-gray-200 font-bold' : 'text-gray-700'}`}>
-                            {result.offset} DEC
-                          </p>
-                        </div>
-                        {result.hints && result.hints.length > 0 && (
-                          <div className="flex flex-wrap gap-1 mt-1">
-                            {result.hints.map((hint, hidx) => (
-                              <span key={hidx} className="text-[8px] bg-[#1A1A1A] text-gray-500 px-1.5 py-0.5 rounded border border-[#252525] flex items-center gap-1">
-                                <Lightbulb className="w-2 h-2" /> {hint}
-                              </span>
-                            ))}
-                          </div>
-                        )}
-                      </div>
-                    </div>
-                    
-                    <div className="flex gap-2 opacity-0 group-hover:opacity-100 transition-opacity">
-                      <button 
-                        onClick={() => toggleFavorite(result.id)}
-                        className={`p-2 hover:bg-[#1A1A1A] rounded-lg transition-colors ${result.isFavorite ? 'text-yellow-500' : 'text-gray-400'}`}
-                        title="Favorite"
-                      >
-                        <Star className={`w-4 h-4 ${result.isFavorite ? 'fill-current' : ''}`} />
-                      </button>
-                      <button 
-                        onClick={() => findSimilar(result.text)}
-                        className="p-2 hover:bg-[#1A1A1A] rounded-lg text-gray-400 hover:text-[#00FF00] transition-colors"
-                        title="Find Similar"
-                      >
-                        <SearchCode className="w-4 h-4" />
-                      </button>
-                      <button 
-                        onClick={() => setSelectedResult(selectedResult === result ? null : result)}
-                        className="p-2 hover:bg-[#1A1A1A] rounded-lg text-gray-400 hover:text-[#00FF00] transition-colors"
-                        title="View Context"
-                      >
-                        <Eye className="w-4 h-4" />
-                      </button>
-                      <button 
-                        onClick={() => saveToDatabase(result)}
-                        className="p-2 hover:bg-[#1A1A1A] rounded-lg text-gray-400 hover:text-[#00FF00] transition-colors"
-                        title="Save to DB"
-                      >
-                        <Save className="w-4 h-4" />
-                      </button>
-                      <button 
-                        onClick={() => copyToClipboard(formatCopy(result), `copy-${idx}`)}
-                        className="p-2 hover:bg-[#1A1A1A] rounded-lg text-gray-400 hover:text-[#00FF00] transition-colors"
-                      >
-                        {copiedId === `copy-${idx}` ? <Check className="w-4 h-4 text-[#00FF00]" /> : <Copy className="w-4 h-4" />}
-                      </button>
-                    </div>
-                  </div>
-
-                  {/* Context Viewer & Pattern Generator */}
-                  <AnimatePresence>
-                    {selectedResult === result && (
-                      <motion.div 
-                        initial={{ height: 0, opacity: 0 }}
-                        animate={{ height: 'auto', opacity: 1 }}
-                        exit={{ height: 0, opacity: 0 }}
-                        className="overflow-hidden"
-                      >
-                        <div className="mt-4 pt-4 border-t border-[#1A1A1A] space-y-4">
-                          <div className="space-y-2">
-                            <p className="text-[10px] uppercase tracking-widest text-gray-600 font-bold">Byte Context</p>
-                            <div className="p-3 bg-[#0A0A0A] rounded-lg font-mono text-[10px] text-gray-400 break-all leading-relaxed">
-                              {result.bytes || 'No byte data available'}
-                            </div>
-                          </div>
-                          
-                          <div className="space-y-2">
-                            <div className="flex items-center justify-between">
-                              <p className="text-[10px] uppercase tracking-widest text-gray-600 font-bold">Generated Pattern (AOB)</p>
-                              <button 
-                                onClick={() => copyToClipboard(generatePattern(result), `pat-${idx}`)}
-                                className="text-[10px] text-[#00FF00] hover:underline"
-                              >
-                                {copiedId === `pat-${idx}` ? 'Copied!' : 'Copy Pattern'}
-                              </button>
-                            </div>
-                            <div className="p-3 bg-[#0A0A0A] rounded-lg font-mono text-[10px] text-[#00FF00]/70 break-all">
-                              {generatePattern(result)}
-                            </div>
-                          </div>
-                        </div>
-                      </motion.div>
-                    )}
-                  </AnimatePresence>
-                </motion.div>
-              ))
+              <Virtuoso
+                style={{ height: '500px' }}
+                totalCount={filteredResults.length}
+                itemContent={Row}
+                className="scrollbar-hide"
+              />
             )}
           </div>
           
