@@ -1,4 +1,5 @@
 import React, { useState, useRef, useEffect, useMemo } from 'react';
+import { Capacitor } from '@capacitor/core';
 import { Virtuoso } from 'react-virtuoso';
 import ErrorBoundary from './components/ErrorBoundary';
 import { 
@@ -269,11 +270,30 @@ export default function App() {
     };
   }, [isAdmin]);
 
+  const [isLoggingIn, setIsLoggingIn] = useState(false);
+
   const handleLogin = async () => {
+    if (Capacitor.isNativePlatform()) {
+      setError("Google Sign-In is not supported in the mobile app yet. Please use the web version in your browser.");
+      return;
+    }
     try {
+      setIsLoggingIn(true);
+      setError(null);
       await signInWithPopup(auth, googleProvider);
-    } catch (error) {
-      setError("Login failed. Please try again.");
+    } catch (error: any) {
+      console.error("Login Error:", error);
+      if (error.code === 'auth/unauthorized-domain') {
+        setError(`This domain (${window.location.hostname}) is not authorized for Google Sign-In. Please add it to "Authorized domains" in your Firebase Console -> Authentication -> Settings.`);
+      } else if (error.code === 'auth/popup-blocked') {
+        setError("Sign-in popup was blocked by your browser. Please allow popups for this site.");
+      } else if (error.code === 'auth/operation-not-allowed') {
+        setError("Google Sign-In is not enabled in your Firebase project. Please enable it in the Firebase Console.");
+      } else {
+        setError(`Login failed: ${error.message || "Unknown error"}`);
+      }
+    } finally {
+      setIsLoggingIn(false);
     }
   };
 
@@ -899,11 +919,25 @@ export default function App() {
             <h2 className="text-2xl font-bold text-white">Welcome to OneCore</h2>
             <p className="text-sm text-gray-500">Please sign in to access the advanced offset finder.</p>
           </div>
+
+          {error && (
+            <div className="p-3 bg-red-500/10 border border-red-500/20 rounded-xl flex items-center gap-2 text-red-500 text-xs text-left">
+              <AlertCircle className="w-4 h-4 flex-shrink-0" />
+              <p>{error}</p>
+            </div>
+          )}
+
           <button 
             onClick={handleLogin}
-            className="w-full py-3 bg-[#00FF00] hover:bg-[#00DD00] text-black font-bold rounded-xl transition-all flex items-center justify-center gap-2"
+            disabled={isLoggingIn}
+            className={`w-full py-3 bg-[#00FF00] hover:bg-[#00DD00] text-black font-bold rounded-xl transition-all flex items-center justify-center gap-2 ${isLoggingIn ? 'opacity-50 cursor-not-allowed' : ''}`}
           >
-            <Smartphone className="w-4 h-4" /> Sign in with Google
+            {isLoggingIn ? (
+              <RefreshCw className="w-4 h-4 animate-spin" />
+            ) : (
+              <Smartphone className="w-4 h-4" />
+            )}
+            {isLoggingIn ? 'Signing in...' : 'Sign in with Google'}
           </button>
           <p className="text-[10px] text-gray-600 uppercase tracking-widest">Secure & Local Processing</p>
         </motion.div>
