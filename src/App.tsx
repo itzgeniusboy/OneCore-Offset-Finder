@@ -48,11 +48,13 @@ import {
   ArrowRightLeft,
   Briefcase,
   Maximize2,
+  Bug,
+  Binary,
+  ListChecks,
   Minimize2,
   Lightbulb,
   FileCode,
   Hash,
-  Binary,
   Share2,
   Eye,
   Save,
@@ -69,7 +71,6 @@ import {
   XCircle,
   FileClock,
   CopyPlus,
-  ListChecks,
   ArrowDownToLine
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
@@ -100,7 +101,12 @@ export default function App() {
     resultLimit: 2000,
     searchPattern: '',
     baseAddress: '0x0',
+    targetPid: '',
+    isExternal: false,
+    isAutoDetect: true,
+    showDebugInfo: false,
   });
+  const [moduleStatus, setModuleStatus] = useState<string | null>(null);
   const [offsetDisplayMode, setOffsetDisplayMode] = useState<'hex' | 'dec' | 'real'>('hex');
   const frequencyMap = useRef<Map<string, number>>(new Map());
   const [searchQuery, setSearchQuery] = useState('');
@@ -372,38 +378,86 @@ export default function App() {
     };
   }, [options.removeDuplicates, options.resultLimit]);
 
-  const formatHex = (num: number | bigint, padding = 6) => {
+  const formatHex = (num: number | bigint, padding = 0) => {
     const hex = typeof num === 'bigint' ? num.toString(16) : num.toString(16);
     return '0x' + hex.toUpperCase().padStart(padding, '0');
   };
 
   const getAbsoluteAddress = (offset: number) => {
+    if (!options.baseAddress || options.baseAddress === '0x0' || options.baseAddress === '0') {
+      return 'INVALID BASE';
+    }
     try {
       const baseStr = options.baseAddress.startsWith('0x') ? options.baseAddress : '0x' + options.baseAddress;
       const base = BigInt(baseStr);
+      if (base === 0n) return 'INVALID BASE';
       const off = BigInt(offset);
-      return formatHex(base + off, 10);
+      return formatHex(base + off, 8); // Full absolute address
     } catch (e) {
-      return '0x0000000000';
+      return 'INVALID BASE';
     }
   };
 
   const parseMaps = (content: string) => {
     const lines = content.split('\n');
+    // Engines to support: Unreal (libUE4.so), Unity (libil2cpp.so)
     const targets = ['libUE4.so', 'libil2cpp.so'];
     
+    // Try specific engines first
     for (const target of targets) {
-      // Look for the first executable segment of the target library
       const line = lines.find(l => l.includes(target) && l.includes('r-xp'));
       if (line) {
-        const baseAddr = line.split('-')[0];
-        setOptions(prev => ({ ...prev, baseAddress: '0x' + baseAddr }));
-        setError(`Detected ${target} base: 0x${baseAddr}`);
-        return;
+        return '0x' + line.split('-')[0];
       }
     }
-    setError('Could not find target library in maps data.');
+    
+    // Fallback: search for any loaded .so if not found
+    const fallbackLine = lines.find(l => l.includes('.so') && l.includes('r-xp'));
+    if (fallbackLine) {
+      return '0x' + fallbackLine.split('-')[0];
+    }
+    
+    return null;
   };
+
+  const detectBaseAddress = async () => {
+    if (!options.isAutoDetect) return;
+    
+    setModuleStatus('DETECTING...');
+    
+    try {
+      // Determine path based on process handling
+      // If external, read from /proc/<pid>/maps using target game PID
+      const path = options.isExternal && options.targetPid 
+        ? `/proc/${options.targetPid}/maps` 
+        : '/proc/self/maps';
+        
+      const response = await fetch(path);
+      if (!response.ok) {
+        if (response.status === 403) throw new Error('NO ACCESS');
+        throw new Error('LIB NOT FOUND');
+      }
+      
+      const content = await response.text();
+      const base = parseMaps(content);
+      
+      if (base) {
+        setOptions(prev => ({ ...prev, baseAddress: base }));
+        setModuleStatus(null);
+      } else {
+        setModuleStatus('LIB NOT FOUND');
+      }
+    } catch (err: any) {
+      console.warn("Module detection failed:", err.message);
+      setModuleStatus(err.message === 'NO ACCESS' ? 'NO ACCESS' : 'LIB NOT FOUND');
+    }
+  };
+
+  useEffect(() => {
+    if (options.isAutoDetect) {
+      detectBaseAddress();
+    }
+  }, [options.isAutoDetect, options.isExternal, options.targetPid]);
 
   const detectModuleBase = (name: string) => {
     const lowerName = name.toLowerCase();
@@ -954,6 +1008,13 @@ export default function App() {
               {offsetDisplayMode === 'hex' ? 'HEX' : offsetDisplayMode === 'dec' ? 'DEC' : 'REAL'}
             </button>
             <button 
+              onClick={() => setOptions(prev => ({ ...prev, showDebugInfo: !prev.showDebugInfo }))}
+              className={`p-2 hover:bg-[#1A1A1A] rounded-full transition-colors ${options.showDebugInfo ? 'text-[#00FF00]' : 'text-gray-400'}`}
+              title="Toggle Debug Info"
+            >
+              <Bug className="w-5 h-5" />
+            </button>
+            <button 
               onClick={() => setShowStats(!showStats)}
               className={`p-2 hover:bg-[#1A1A1A] rounded-full transition-colors ${showStats ? 'text-[#00FF00]' : 'text-gray-400'}`}
               title="Toggle Stats"
@@ -1436,28 +1497,123 @@ export default function App() {
               className="overflow-hidden"
             >
               <div className="bg-[#0A0A0A] border border-[#1A1A1A] rounded-2xl p-6 grid grid-cols-1 sm:grid-cols-2 gap-6">
-                <div className="space-y-3">
-                  <label className="text-xs font-bold text-gray-400 flex items-center gap-2">
-                    <Binary className="w-3 h-3" /> Module Base Address
+                <div className="space-y-3 col-span-full">
+                  <label className="text-xs font-bold text-gray-400 flex items-center justify-between">
+                    <div className="flex items-center gap-2">
+                      <Binary className="w-3 h-3" /> Memory Address Calculation
+                    </div>
+                    {moduleStatus && (
+                      <span className={`text-[9px] px-2 py-0.5 rounded-full font-bold ${
+                        moduleStatus === 'DETECTING...' ? 'bg-blue-500/20 text-blue-400 animate-pulse' :
+                        moduleStatus === 'LIB NOT FOUND' ? 'bg-red-500/20 text-red-400' :
+                        moduleStatus === 'NO ACCESS' ? 'bg-red-500/20 text-red-400' :
+                        'bg-green-500/20 text-green-400'
+                      }`}>
+                        {moduleStatus}
+                      </span>
+                    )}
                   </label>
-                  <div className="flex gap-2">
-                    <input 
-                      type="text" 
-                      placeholder="e.g. 0x7000000000"
-                      value={options.baseAddress}
-                      onChange={(e) => setOptions(prev => ({ ...prev, baseAddress: e.target.value }))}
-                      className="flex-1 bg-[#0A0A0A] border border-[#1A1A1A] rounded-lg px-3 py-2 text-xs focus:outline-none focus:border-[#00FF00]/50 transition-all font-mono"
-                    />
+                  
+                  <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+                    <div className="space-y-2">
+                      <p className="text-[10px] text-gray-500 uppercase font-bold">Process Mode</p>
+                      <div className="flex gap-2">
+                        <button 
+                          onClick={() => setOptions(prev => ({ ...prev, isExternal: false }))}
+                          className={`flex-1 py-2 rounded-lg text-[10px] font-bold uppercase transition-all border ${!options.isExternal ? 'bg-[#00FF00] text-black border-[#00FF00]' : 'bg-[#1A1A1A] text-gray-500 border-[#252525]'}`}
+                        >
+                          In-Process
+                        </button>
+                        <button 
+                          onClick={() => setOptions(prev => ({ ...prev, isExternal: true }))}
+                          className={`flex-1 py-2 rounded-lg text-[10px] font-bold uppercase transition-all border ${options.isExternal ? 'bg-[#00FF00] text-black border-[#00FF00]' : 'bg-[#1A1A1A] text-gray-500 border-[#252525]'}`}
+                        >
+                          External
+                        </button>
+                      </div>
+                    </div>
+
+                    {options.isExternal && (
+                      <div className="space-y-2">
+                        <p className="text-[10px] text-gray-500 uppercase font-bold">Target PID</p>
+                        <input 
+                          type="text" 
+                          placeholder="Process ID (e.g. 1234)"
+                          value={options.targetPid}
+                          onChange={(e) => setOptions(prev => ({ ...prev, targetPid: e.target.value }))}
+                          className="w-full bg-[#050505] border border-[#1A1A1A] rounded-lg px-3 py-2 text-xs focus:outline-none focus:border-[#00FF00]/50 transition-all font-mono"
+                        />
+                      </div>
+                    )}
+
+                    <div className="space-y-2">
+                      <p className="text-[10px] text-gray-500 uppercase font-bold">Base Address</p>
+                      <div className="flex gap-2">
+                        <input 
+                          type="text" 
+                          placeholder="0x7000000000"
+                          value={options.baseAddress}
+                          onChange={(e) => setOptions(prev => ({ ...prev, baseAddress: e.target.value }))}
+                          className="flex-1 bg-[#050505] border border-[#1A1A1A] rounded-lg px-3 py-2 text-xs focus:outline-none focus:border-[#00FF00]/50 transition-all font-mono"
+                        />
+                        <button 
+                          onClick={detectBaseAddress}
+                          className="p-2 bg-[#1A1A1A] hover:bg-[#252525] text-[#00FF00] rounded-lg border border-[#252525]"
+                          title="Refresh Base"
+                        >
+                          <RefreshCw className={`w-4 h-4 ${moduleStatus === 'DETECTING...' ? 'animate-spin' : ''}`} />
+                        </button>
+                      </div>
+                    </div>
                   </div>
+
+                  <div className="flex flex-wrap gap-4 pt-2">
+                    <div className="flex items-center gap-2">
+                      <button 
+                        onClick={() => setOptions(prev => ({ ...prev, isAutoDetect: !prev.isAutoDetect }))}
+                        className={`w-8 h-4 rounded-full transition-all relative ${options.isAutoDetect ? 'bg-[#00FF00]' : 'bg-gray-700'}`}
+                      >
+                        <div className={`absolute top-0.5 w-3 h-3 bg-white rounded-full transition-all ${options.isAutoDetect ? 'right-0.5' : 'left-0.5'}`} />
+                      </button>
+                      <span className="text-[10px] text-gray-500 uppercase font-bold">Auto-Detect Module</span>
+                    </div>
+                    <div className="flex items-center gap-2">
+                      <button 
+                        onClick={() => setOptions(prev => ({ ...prev, showDebugInfo: !prev.showDebugInfo }))}
+                        className={`w-8 h-4 rounded-full transition-all relative ${options.showDebugInfo ? 'bg-[#00FF00]' : 'bg-gray-700'}`}
+                      >
+                        <div className={`absolute top-0.5 w-3 h-3 bg-white rounded-full transition-all ${options.showDebugInfo ? 'right-0.5' : 'left-0.5'}`} />
+                      </button>
+                      <span className="text-[10px] text-gray-500 uppercase font-bold">Show Debug Info</span>
+                    </div>
+                  </div>
+
+                  {options.showDebugInfo && (
+                    <div className="p-3 bg-[#050505] border border-[#1A1A1A] rounded-xl space-y-1">
+                      <p className="text-[9px] text-gray-600 uppercase tracking-widest font-bold">Debug Information</p>
+                      <div className="grid grid-cols-2 gap-2 text-[10px] font-mono">
+                        <span className="text-gray-500">Maps Source:</span>
+                        <span className="text-gray-300">{options.isExternal ? `/proc/${options.targetPid}/maps` : '/proc/self/maps'}</span>
+                        <span className="text-gray-500">Current Base:</span>
+                        <span className="text-[#00FF00]">{options.baseAddress}</span>
+                        <span className="text-gray-500">Status:</span>
+                        <span className="text-gray-300">{moduleStatus || 'READY'}</span>
+                      </div>
+                    </div>
+                  )}
+                  
                   <div className="space-y-2">
-                    <p className="text-[10px] text-gray-500 uppercase font-bold">Paste /proc/self/maps content:</p>
+                    <p className="text-[10px] text-gray-500 uppercase font-bold">Manual Maps Fallback</p>
                     <textarea 
-                      placeholder="Paste maps data here to auto-detect base..."
-                      onChange={(e) => parseMaps(e.target.value)}
+                      placeholder="Paste /proc/self/maps content here if auto-detect fails..."
+                      onChange={(e) => {
+                        const base = parseMaps(e.target.value);
+                        if (base) setOptions(prev => ({ ...prev, baseAddress: base }));
+                      }}
                       className="w-full h-20 bg-[#050505] border border-[#1A1A1A] rounded-lg p-2 text-[10px] font-mono focus:outline-none focus:border-[#00FF00]/30 resize-none"
                     />
                   </div>
-                  <p className="text-[10px] text-gray-600 italic">REAL Mode = Base + Offset (64-bit compatible)</p>
+                  <p className="text-[10px] text-gray-600 italic">REAL Mode = Base + Offset (True Memory Address)</p>
                 </div>
 
                 <div className="space-y-3">

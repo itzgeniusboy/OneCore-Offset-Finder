@@ -81,6 +81,10 @@ export interface ScanOptions {
   resultLimit: number;
   searchPattern?: string; // AOB pattern to search for
   baseAddress: string; // Module base address for absolute calculation
+  targetPid?: string; // Target process ID for external scanning
+  isExternal?: boolean; // Whether to scan external process maps
+  isAutoDetect?: boolean; // Auto-detect module base address
+  showDebugInfo?: boolean; // Show debug information like base address
 }
 
 export interface WorkerMessage {
