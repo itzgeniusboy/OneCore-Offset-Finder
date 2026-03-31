@@ -284,7 +284,8 @@ export default function App() {
     } catch (error: any) {
       console.error("Login Error:", error);
       if (error.code === 'auth/unauthorized-domain') {
-        setError(`This domain (${window.location.hostname}) is not authorized for Google Sign-In. Please add it to "Authorized domains" in your Firebase Console -> Authentication -> Settings.`);
+        const isNetlify = window.location.hostname.includes('netlify.app');
+        setError(`This domain (${window.location.hostname}) is not authorized for Google Sign-In. ${isNetlify ? "Netlify domains must be manually added to Firebase." : ""} Please add it to "Authorized domains" in your Firebase Console -> Authentication -> Settings.`);
       } else if (error.code === 'auth/popup-blocked') {
         setError("Sign-in popup was blocked by your browser. Please allow popups for this site.");
       } else if (error.code === 'auth/operation-not-allowed') {
@@ -921,9 +922,38 @@ export default function App() {
           </div>
 
           {error && (
-            <div className="p-3 bg-red-500/10 border border-red-500/20 rounded-xl flex items-center gap-2 text-red-500 text-xs text-left">
-              <AlertCircle className="w-4 h-4 flex-shrink-0" />
-              <p>{error}</p>
+            <div className="p-4 bg-red-500/10 border border-red-500/20 rounded-xl space-y-3 text-left">
+              <div className="flex items-start gap-2 text-red-500 text-xs">
+                <AlertCircle className="w-4 h-4 flex-shrink-0 mt-0.5" />
+                <p className="leading-relaxed">{error}</p>
+              </div>
+              {error.includes('not authorized') && (
+                <>
+                  <button 
+                    onClick={() => {
+                      navigator.clipboard.writeText(window.location.hostname);
+                      const btn = document.getElementById('copy-domain-btn');
+                      if (btn) btn.innerText = 'Copied!';
+                      setTimeout(() => {
+                        if (btn) btn.innerText = 'Copy Domain';
+                      }, 2000);
+                    }}
+                    className="w-full py-2 bg-white/5 hover:bg-white/10 text-white text-[10px] font-bold uppercase tracking-widest rounded-lg border border-white/10 transition-all flex items-center justify-center gap-2"
+                  >
+                    <Copy className="w-3 h-3" />
+                    <span id="copy-domain-btn">Copy Domain</span>
+                  </button>
+                  <div className="p-3 bg-[#1A1A1A] rounded-lg space-y-2">
+                    <p className="text-[10px] font-bold text-gray-400 uppercase tracking-widest">How to fix:</p>
+                    <ol className="text-[10px] text-gray-500 space-y-1 list-decimal list-inside">
+                      <li>Open Firebase Console</li>
+                      <li>Authentication &gt; Settings</li>
+                      <li>Authorized domains &gt; Add domain</li>
+                      <li>Paste the copied domain and Save</li>
+                    </ol>
+                  </div>
+                </>
+              )}
             </div>
           )}
 
