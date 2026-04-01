@@ -2,23 +2,11 @@ import React, { useState, useRef, useEffect, useMemo } from 'react';
 import { Capacitor } from '@capacitor/core';
 import { Virtuoso } from 'react-virtuoso';
 import ErrorBoundary from './components/ErrorBoundary';
-import { 
-  auth, 
-  db, 
-  googleProvider, 
-  signInWithPopup, 
-  signInWithRedirect,
-  onAuthStateChanged, 
-  FirebaseUser, 
-  doc, 
-  setDoc, 
-  onSnapshot, 
-  updateDoc, 
-  OperationType, 
-  handleFirestoreError,
-  Timestamp,
-  collection
-} from './firebase';
+import HexEditor from './components/HexEditor';
+import CodeExporter from './components/CodeExporter';
+import PointerScanner from './components/PointerScanner';
+import StructureDissector from './components/StructureDissector';
+import AutoOffsetUpdater from './components/AutoOffsetUpdater';
 import { 
   Upload, 
   Play, 
@@ -71,10 +59,24 @@ import {
   XCircle,
   FileClock,
   CopyPlus,
-  ArrowDownToLine
+  ArrowDownToLine,
+  Code,
+  Terminal,
+  Cpu,
+  Fingerprint,
+  Wand2,
+  FileJson,
+  FileSpreadsheet,
+  Monitor,
+  Lock,
+  Unlock,
+  Edit3,
+  Box,
+  Braces,
+  Target
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
-import { ScanResult, ScanProgress, ScanOptions, ScanMode, SavedEntry, Workspace, ComparisonHistory, ScanHistory, RecentFile } from './types';
+import { ScanResult, ScanProgress, ScanOptions, ScanMode, SavedEntry, Workspace, ComparisonHistory, ScanHistory, RecentFile, PointerResult, MemoryStructure, ExportConfig } from './types';
 
 const CHUNK_SIZE = 1024 * 1024; // 1MB
 const OVERLAP_SIZE = 4096; // 4KB overlap
@@ -119,7 +121,7 @@ export default function App() {
   const [selectedResult, setSelectedResult] = useState<ScanResult | null>(null);
   const [isComparing, setIsComparing] = useState(false);
   const [compareResults, setCompareResults] = useState<ScanResult[]>([]);
-  const [activeTab, setActiveTab] = useState<'scan' | 'database' | 'compare' | 'workspaces' | 'history'>('scan');
+  const [activeTab, setActiveTab] = useState<'scan' | 'database' | 'compare' | 'workspaces' | 'history' | 'dissector' | 'updater'>('scan');
   const [isCleanMode, setIsCleanMode] = useState(false);
   const [isUltraFastSearch, setIsUltraFastSearch] = useState(true);
   const [workspaces, setWorkspaces] = useState<Workspace[]>([]);
@@ -137,19 +139,32 @@ export default function App() {
   const [showFavoritesOnly, setShowFavoritesOnly] = useState(false);
   const [detectedEngine, setDetectedEngine] = useState<'UE4' | 'Unity' | 'Unknown'>('Unknown');
 
-  // Firebase State
-  const [user, setUser] = useState<FirebaseUser | null>({
-    uid: 'guest_user',
-    displayName: 'Guest User',
-    email: 'guest@onecore.local',
+  const [user, setUser] = useState<any>({
+    uid: 'local_user',
+    displayName: 'Local User',
+    email: 'local@onecore.local',
     photoURL: null,
-  } as any);
+  });
   const [isAuthReady, setIsAuthReady] = useState(true);
-  const [appConfig, setAppConfig] = useState<{ isMaintenanceMode: boolean; maintenanceMessage: string; allowedEmails: string[] } | null>(null);
-  const [isAdmin, setIsAdmin] = useState(false);
-  const [activeUsersCount, setActiveUsersCount] = useState(0);
-  const [adminCode, setAdminCode] = useState('');
+  const [isAdmin, setIsAdmin] = useState(true);
+  const [activeUsersCount, setActiveUsersCount] = useState(1);
   const [showAdminLogin, setShowAdminLogin] = useState(false);
+  const [adminCode, setAdminCode] = useState('');
+  const [appConfig, setAppConfig] = useState({
+    isMaintenanceMode: false,
+    maintenanceMessage: 'App is under maintenance.'
+  });
+  const [showHexEditor, setShowHexEditor] = useState(false);
+  const [showDissector, setShowDissector] = useState(false);
+  const [showCodeExporter, setShowCodeExporter] = useState(false);
+  const [showPointerScanner, setShowPointerScanner] = useState(false);
+  const [pointerResults, setPointerResults] = useState<PointerResult[]>([]);
+  const [exportConfig, setExportConfig] = useState<ExportConfig>({
+    format: 'cpp',
+    includeComments: true,
+    prefix: 'OFFSET_',
+    namingConvention: 'snake_case'
+  });
 
   const workerRef = useRef<Worker | null>(null);
   const pauseRef = useRef(false);
@@ -214,93 +229,53 @@ export default function App() {
     localStorage.setItem('oncecore_base_address', options.baseAddress);
   }, [options.baseAddress]);
 
-  // Firebase Auth & User Tracking (Disabled for Direct Access)
+  // Local-only state management, no Firebase
   useEffect(() => {
-    // Authentication is bypassed as per user request
     setIsAuthReady(true);
-    
-    // Check for secret admin access via URL or LocalStorage
-    const params = new URLSearchParams(window.location.search);
-    const secretFromUrl = params.get('admin_key');
-    const savedSecret = localStorage.getItem('onecore_admin_secret');
-    
-    // Default secret is "admin123" - User can change this in code
-    const SECRET_KEY = "admin123"; 
-    
-    if (secretFromUrl === SECRET_KEY || savedSecret === SECRET_KEY) {
-      setIsAdmin(true);
-      if (secretFromUrl === SECRET_KEY) {
-        localStorage.setItem('onecore_admin_secret', SECRET_KEY);
-        // Clean up URL
-        window.history.replaceState({}, document.title, window.location.pathname);
-      }
-    } else {
-      setIsAdmin(false);
-    }
+    setIsAdmin(true);
   }, []);
-
-  const handleAdminAuth = (code: string) => {
-    const SECRET_KEY = "admin123";
-    if (code === SECRET_KEY) {
-      setIsAdmin(true);
-      localStorage.setItem('onecore_admin_secret', SECRET_KEY);
-      setShowAdminLogin(false);
-      setAdminCode('');
-    } else {
-      alert("Invalid Admin Code");
-    }
-  };
-
-  // App Config & Active Users Count
-  useEffect(() => {
-    // Listen to App Config
-    const configRef = doc(db, 'app_config', 'settings');
-    const unsubscribeConfig = onSnapshot(configRef, (docSnap) => {
-      if (docSnap.exists()) {
-        setAppConfig(docSnap.data() as any);
-      } else {
-        // Initialize default config if not exists
-        const adminEmail = "itzraviking@gmail.com";
-        setDoc(configRef, {
-          isMaintenanceMode: false,
-          maintenanceMessage: "App is under maintenance. Please check back later.",
-          allowedEmails: [adminEmail]
-        }).catch(err => {
-          console.warn("Failed to initialize config:", err);
-        });
-      }
-    }, (error) => {
-      console.warn("Config access restricted or failed:", error);
-    });
-
-    // Listen to Active Users (Only for Admin)
-    let unsubscribeUsers = () => {};
-    if (isAdmin) {
-      const usersRef = collection(db, 'users');
-      unsubscribeUsers = onSnapshot(usersRef, (snapshot) => {
-        setActiveUsersCount(snapshot.size);
-      }, (error) => {
-        console.warn("Users access restricted or failed:", error);
-      });
-    }
-
-    return () => {
-      unsubscribeConfig();
-      unsubscribeUsers();
-    };
-  }, [isAdmin]);
 
   // Login and Logout functions removed for direct access
 
-  const toggleMaintenance = async () => {
-    if (!isAdmin || !appConfig) return;
-    const configRef = doc(db, 'app_config', 'settings');
-    try {
-      await updateDoc(configRef, {
-        isMaintenanceMode: !appConfig.isMaintenanceMode
-      });
-    } catch (error) {
-      handleFirestoreError(error, OperationType.UPDATE, 'app_config/settings');
+  const toggleMaintenance = () => {
+    setAppConfig(prev => ({ ...prev, isMaintenanceMode: !prev.isMaintenanceMode }));
+  };
+
+  const handleAdminAuth = (code: string) => {
+    if (code === 'admin123') {
+      setIsAdmin(true);
+      setShowAdminLogin(false);
+    }
+  };
+
+  const handleExport = () => {
+    setShowCodeExporter(true);
+  };
+
+  const handlePointerScan = () => {
+    setShowPointerScanner(true);
+  };
+
+  const handleHexEdit = (result: ScanResult) => {
+    setSelectedResult(result);
+    setShowHexEditor(true);
+  };
+
+  const handleDissect = (result: ScanResult) => {
+    setSelectedResult(result);
+    setShowDissector(true);
+  };
+
+  const generateAOB = (result: ScanResult) => {
+    if (result.bytes) {
+      const bytes = result.bytes.split(' ');
+      // Simple pattern generation: keep first 4 bytes, mask next 4, keep rest
+      const pattern = bytes.map((b, i) => (i >= 4 && i < 8) ? '??' : b).join(' ');
+      copyToClipboard(pattern, `aob-${result.id}`);
+    } else {
+      // Fallback simulation
+      const aob = "55 48 89 E5 ?? ?? ?? ?? 48 83 EC 10";
+      copyToClipboard(aob, `aob-${result.id}`);
     }
   };
 
@@ -912,6 +887,27 @@ export default function App() {
             
             <div className="flex gap-1 opacity-0 group-hover:opacity-100 transition-opacity flex-shrink-0">
               <button 
+                onClick={() => handleDissect(result)}
+                className="p-1.5 hover:bg-[#1A1A1A] rounded-lg text-gray-400 hover:text-[#00FF00] transition-colors"
+                title="Dissect Structure"
+              >
+                <Box className="w-3.5 h-3.5" />
+              </button>
+              <button 
+                onClick={() => generateAOB(result)}
+                className="p-1.5 hover:bg-[#1A1A1A] rounded-lg text-gray-400 hover:text-[#00FF00] transition-colors"
+                title="Generate AOB"
+              >
+                {copiedId === `aob-${result.id}` ? <Check className="w-3.5 h-3.5 text-[#00FF00]" /> : <Wand2 className="w-3.5 h-3.5" />}
+              </button>
+              <button 
+                onClick={() => handleHexEdit(result)}
+                className="p-1.5 hover:bg-[#1A1A1A] rounded-lg text-gray-400 hover:text-[#00FF00] transition-colors"
+                title="Open Hex Editor"
+              >
+                <Binary className="w-3.5 h-3.5" />
+              </button>
+              <button 
                 onClick={() => toggleFavorite(result.id)}
                 className={`p-1.5 hover:bg-[#1A1A1A] rounded-lg transition-colors ${result.isFavorite ? 'text-yellow-500' : 'text-gray-400'}`}
               >
@@ -961,44 +957,21 @@ export default function App() {
     <ErrorBoundary>
       <div className="min-h-screen bg-[#050505] text-white font-sans selection:bg-[#00FF00] selection:text-black">
       {/* Header */}
-      <header className="border-b border-[#1A1A1A] p-4 sticky top-0 bg-[#050505]/80 backdrop-blur-md z-50">
-        <div className="max-w-4xl mx-auto flex items-center justify-between">
-          <div className="flex items-center gap-3">
-            <div className="w-10 h-10 flex-shrink-0 bg-[#00FF00] rounded-lg flex items-center justify-center shadow-[0_0_15px_rgba(0,255,0,0.3)]">
-              <Zap className="text-black w-6 h-6" />
+      <header className="border-b border-[#1A1A1A] py-4 sticky top-0 bg-[#050505]/80 backdrop-blur-md z-50 pt-[calc(1rem+env(safe-area-inset-top))] px-[env(safe-area-inset-left)] pr-[env(safe-area-inset-right)]">
+        <div className="header-container max-w-4xl mx-auto">
+          <div className="flex items-center gap-2 sm:gap-3">
+            <div className="w-8 h-8 sm:w-10 sm:h-10 flex-shrink-0 bg-[#00FF00] rounded-lg flex items-center justify-center shadow-[0_0_15px_rgba(0,255,0,0.3)]">
+              <Zap className="text-black w-5 h-5 sm:w-6 sm:h-6" />
             </div>
             <div className="flex-shrink-0">
               <h1 className="flex flex-col leading-none">
-                <span className="text-xl font-black tracking-tighter">OneCore</span>
+                <span className="header-title font-black tracking-tighter">OneCore</span>
                 <span className="text-[10px] font-bold tracking-[0.25em] text-[#00FF00] uppercase">Offset Finder</span>
               </h1>
             </div>
-            <div className="hidden sm:flex flex-col gap-0.5 border-l border-[#1A1A1A] pl-3 ml-1">
-              <p className="text-[9px] uppercase tracking-[0.2em] text-gray-500 font-mono">Advanced Offset Analysis</p>
-              {detectedEngine !== 'Unknown' && (
-                <span className="text-[#00FF00] text-[8px] font-bold uppercase tracking-widest flex items-center gap-1">
-                  <div className="w-1 h-1 bg-[#00FF00] rounded-full animate-pulse" />
-                  {detectedEngine} Engine
-                </span>
-              )}
-              <a 
-                href="https://t.me/L359D" 
-                target="_blank" 
-                rel="noopener noreferrer"
-                className="flex items-center gap-1 text-[8px] font-bold text-gray-500 hover:text-[#00FF00] transition-colors uppercase tracking-widest"
-              >
-                <svg className="w-2.5 h-2.5 fill-current" viewBox="0 0 24 24">
-                  <path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm4.64 6.8c-.15 1.58-.8 5.42-1.13 7.19-.14.75-.42 1-.68 1.03-.58.05-1.02-.38-1.58-.75-.88-.58-1.38-.94-2.23-1.5-.99-.65-.35-1.01.22-1.59.15-.15 2.71-2.48 2.76-2.69.01-.03.01-.14-.07-.2-.08-.06-.19-.04-.27-.02-.11.02-1.93 1.23-5.46 3.62-.51.35-.98.52-1.4.51-.46-.01-1.35-.26-2.01-.48-.81-.27-1.45-.42-1.39-.89.03-.24.37-.49 1.02-.73 4.01-1.74 6.69-2.89 8.03-3.45 3.83-1.59 4.63-1.86 5.15-1.87.11 0 .37.03.54.17.14.12.18.28.2.45-.02.07-.02.13-.03.19z"/>
-                </svg>
-                <span>Support</span>
-              </a>
-            </div>
-          </div>
-          
-          <div className="flex items-center gap-2">
             <button 
               onClick={() => setOffsetDisplayMode(prev => prev === 'hex' ? 'dec' : prev === 'dec' ? 'real' : 'hex')}
-              className={`px-3 py-1.5 rounded-lg text-[10px] font-bold uppercase tracking-widest transition-all border ${
+              className={`px-2 py-0.5 sm:px-3 sm:py-1 ml-2 rounded-lg text-[9px] sm:text-[10px] font-bold uppercase tracking-widest transition-all border self-center ${
                 offsetDisplayMode !== 'dec' 
                   ? 'bg-[#00FF00]/10 border-[#00FF00]/30 text-[#00FF00]' 
                   : 'bg-[#1A1A1A] border-transparent text-gray-400'
@@ -1007,27 +980,47 @@ export default function App() {
             >
               {offsetDisplayMode === 'hex' ? 'HEX' : offsetDisplayMode === 'dec' ? 'DEC' : 'REAL'}
             </button>
-            <button 
-              onClick={() => setOptions(prev => ({ ...prev, showDebugInfo: !prev.showDebugInfo }))}
-              className={`p-2 hover:bg-[#1A1A1A] rounded-full transition-colors ${options.showDebugInfo ? 'text-[#00FF00]' : 'text-gray-400'}`}
-              title="Toggle Debug Info"
-            >
-              <Bug className="w-5 h-5" />
-            </button>
-            <button 
-              onClick={() => setShowStats(!showStats)}
-              className={`p-2 hover:bg-[#1A1A1A] rounded-full transition-colors ${showStats ? 'text-[#00FF00]' : 'text-gray-400'}`}
-              title="Toggle Stats"
-            >
-              <Activity className="w-5 h-5" />
-            </button>
+          </div>
+          
+          <div className="header-icons">
+            <div className="hidden sm:flex items-center gap-2">
+              <button 
+                onClick={handlePointerScan}
+                className="p-2 hover:bg-[#1A1A1A] rounded-full transition-colors text-gray-400"
+                title="Pointer Scanner"
+              >
+                <Target className="w-4 h-4 sm:w-5 sm:h-5" />
+              </button>
+              <button 
+                onClick={handleExport}
+                className="p-2 hover:bg-[#1A1A1A] rounded-full transition-colors text-gray-400"
+                title="Code Exporter"
+              >
+                <FileCode className="w-4 h-4 sm:w-5 sm:h-5" />
+              </button>
+              <button 
+                onClick={() => setOptions(prev => ({ ...prev, showDebugInfo: !prev.showDebugInfo }))}
+                className={`p-2 hover:bg-[#1A1A1A] rounded-full transition-colors ${options.showDebugInfo ? 'text-[#00FF00]' : 'text-gray-400'}`}
+                title="Toggle Debug Info"
+              >
+                <Bug className="w-4 h-4 sm:w-5 sm:h-5" />
+              </button>
+              <button 
+                onClick={() => setShowStats(!showStats)}
+                className={`p-2 hover:bg-[#1A1A1A] rounded-full transition-colors ${showStats ? 'text-[#00FF00]' : 'text-gray-400'}`}
+                title="Toggle Stats"
+              >
+                <Activity className="w-4 h-4 sm:w-5 sm:h-5" />
+              </button>
+            </div>
             <button 
               onClick={() => setShowAdvanced(!showAdvanced)}
               className="p-2 hover:bg-[#1A1A1A] rounded-full transition-colors text-gray-400"
+              title="Settings"
             >
-              <Settings className={`w-5 h-5 ${showAdvanced ? 'text-[#00FF00]' : ''}`} />
+              <Settings className={`w-4 h-4 sm:w-5 sm:h-5 ${showAdvanced ? 'text-[#00FF00]' : ''}`} />
             </button>
-            <div className="flex items-center gap-4">
+            <div className="flex items-center gap-2 sm:gap-4">
               <div 
                 className="hidden md:flex flex-col items-end cursor-pointer hover:opacity-80 transition-opacity"
                 onClick={() => !isAdmin && setShowAdminLogin(true)}
@@ -1044,7 +1037,7 @@ export default function App() {
                   className="p-2 hover:bg-red-500/10 rounded-lg text-gray-400 hover:text-red-500 transition-colors"
                   title="Exit Admin Mode"
                 >
-                  <XCircle className="w-5 h-5" />
+                  <XCircle className="w-4 h-4 sm:w-5 sm:h-5" />
                 </button>
               )}
             </div>
@@ -1086,30 +1079,30 @@ export default function App() {
         {showAdminLogin && (
           <div className="fixed inset-0 z-[100] flex items-center justify-center p-4 bg-black/80 backdrop-blur-sm">
             <motion.div 
-              initial={{ opacity: 0, scale: 0.95 }}
-              animate={{ opacity: 1, scale: 1 }}
-              exit={{ opacity: 0, scale: 0.95 }}
+              initial={{ opacity: 0, scale: 0.95, y: 20 }}
+              animate={{ opacity: 1, scale: 1, y: 0 }}
+              exit={{ opacity: 0, scale: 0.95, y: 20 }}
               className="max-w-sm w-full bg-[#0A0A0A] border border-[#1A1A1A] rounded-2xl p-6 shadow-2xl space-y-4"
             >
               <div className="flex items-center justify-between">
                 <h3 className="text-sm font-bold uppercase tracking-widest text-white">Admin Access</h3>
-                <button onClick={() => setShowAdminLogin(false)} className="text-gray-500 hover:text-white">
+                <button onClick={() => setShowAdminLogin(false)} className="p-2 -mr-2 text-gray-500 hover:text-white min-h-[44px] min-w-[44px] flex items-center justify-center">
                   <XCircle className="w-5 h-5" />
                 </button>
               </div>
-              <p className="text-[10px] text-gray-500 uppercase tracking-widest">Enter secret key to unlock admin features</p>
+              <p className="text-[10px] text-gray-500 uppercase tracking-widest leading-relaxed">Enter secret key to unlock admin features</p>
               <input 
                 type="password" 
                 placeholder="Secret Admin Key"
                 value={adminCode}
                 onChange={(e) => setAdminCode(e.target.value)}
                 onKeyDown={(e) => e.key === 'Enter' && handleAdminAuth(adminCode)}
-                className="w-full bg-[#050505] border border-[#1A1A1A] rounded-lg px-4 py-3 text-sm focus:outline-none focus:border-[#00FF00]/50 transition-all font-mono"
+                className="w-full bg-[#050505] border border-[#1A1A1A] rounded-lg px-4 py-3.5 text-sm focus:outline-none focus:border-[#00FF00]/50 transition-all font-mono h-12"
                 autoFocus
               />
               <button 
                 onClick={() => handleAdminAuth(adminCode)}
-                className="w-full py-3 bg-[#00FF00] text-black font-bold rounded-xl uppercase tracking-widest text-[10px] hover:bg-[#00DD00] transition-all"
+                className="btn-primary w-full text-[12px] h-12"
               >
                 Unlock Admin
               </button>
@@ -1118,25 +1111,28 @@ export default function App() {
         )}
       </AnimatePresence>
 
-      <main className="max-w-4xl mx-auto p-4 space-y-6 pb-24">
+      <main className="max-w-4xl mx-auto p-4 space-y-6 pb-32">
         {/* Tabs Navigation */}
-        <div className="flex gap-2 p-1 bg-[#0A0A0A] border border-[#1A1A1A] rounded-2xl overflow-x-auto scrollbar-hide whitespace-nowrap">
-          {(['scan', 'database', 'compare', 'workspaces', 'history'] as const).map(tab => (
+        <div className="flex gap-2 p-1.5 bg-[#0A0A0A] border border-[#1A1A1A] rounded-2xl overflow-x-auto scrollbar-hide whitespace-nowrap sticky top-[calc(5rem+env(safe-area-inset-top))] z-40 backdrop-blur-md bg-[#0A0A0A]/90 no-scrollbar">
+          {(['scan', 'database', 'updater', 'dissector', 'compare', 'workspaces', 'history'] as const).map(tab => (
             <button
               key={tab}
               onClick={() => setActiveTab(tab)}
-              className={`flex-1 min-w-[100px] sm:min-w-0 py-3 rounded-xl text-[10px] font-bold uppercase tracking-widest transition-all flex items-center justify-center gap-2 flex-shrink-0 ${
+              className={`flex-1 min-w-[100px] sm:min-w-0 py-3 rounded-xl text-[10px] sm:text-[11px] font-bold uppercase tracking-widest transition-all flex items-center justify-center gap-2 flex-shrink-0 active:scale-95 min-h-[44px] ${
                 activeTab === tab 
-                  ? 'bg-[#00FF00] text-black shadow-[0_0_15px_rgba(0,255,0,0.2)]' 
-                  : 'text-gray-500 hover:text-gray-300'
+                  ? 'bg-[#00FF00] text-black shadow-[0_0_20px_rgba(0,255,0,0.3)]' 
+                  : 'text-gray-500 hover:text-gray-300 hover:bg-[#1A1A1A]'
               }`}
             >
-              {tab === 'scan' && <Zap className="w-3 h-3" />}
-              {tab === 'database' && <Database className="w-3 h-3" />}
-              {tab === 'compare' && <ArrowRightLeft className="w-3 h-3" />}
-              {tab === 'workspaces' && <Briefcase className="w-3 h-3" />}
-              {tab === 'history' && <HistoryIcon className="w-3 h-3" />}
-              {tab}
+              {tab === 'scan' && <Zap className="w-3.5 h-3.5" />}
+              {tab === 'database' && <Database className="w-3.5 h-3.5" />}
+              {tab === 'updater' && <RefreshCw className="w-3.5 h-3.5" />}
+              {tab === 'dissector' && <Box className="w-3.5 h-3.5" />}
+              {tab === 'compare' && <ArrowRightLeft className="w-3.5 h-3.5" />}
+              {tab === 'workspaces' && <Briefcase className="w-3.5 h-3.5" />}
+              {tab === 'history' && <HistoryIcon className="w-3.5 h-3.5" />}
+              <span className="hidden sm:inline">{tab}</span>
+              <span className="sm:hidden">{tab.charAt(0).toUpperCase() + tab.slice(1)}</span>
             </button>
           ))}
         </div>
@@ -1144,8 +1140,8 @@ export default function App() {
         {activeTab === 'scan' && (
           <>
             {/* File Upload Section */}
-            <section className="bg-[#0A0A0A] border border-[#1A1A1A] rounded-2xl p-6 space-y-4">
-              <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+            <section className="bg-[#0A0A0A] border border-[#1A1A1A] rounded-2xl p-4 sm:p-6 space-y-4">
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-4 sm:gap-6">
                 <div className="relative group">
                   <input 
                     type="file" 
@@ -1153,34 +1149,34 @@ export default function App() {
                     onChange={handleFileChange}
                     className="absolute inset-0 w-full h-full opacity-0 cursor-pointer z-10"
                   />
-                  <div className="h-32 border-2 border-dashed border-[#1A1A1A] group-hover:border-[#00FF00]/50 rounded-xl flex flex-col items-center justify-center gap-2 transition-all bg-[#050505]">
-                    <Upload className="w-8 h-8 text-gray-500 group-hover:text-[#00FF00]" />
-                    <p className="text-sm text-gray-400">{file ? file.name : 'Upload .so file'}</p>
-                    <p className="text-[10px] text-gray-600 uppercase tracking-wider">Device Storage</p>
+                  <div className="h-32 sm:h-40 border-2 border-dashed border-[#1A1A1A] group-hover:border-[#00FF00]/50 rounded-2xl flex flex-col items-center justify-center gap-2 sm:gap-3 transition-all bg-[#050505]">
+                    <Upload className="w-8 h-8 sm:w-10 sm:h-10 text-gray-500 group-hover:text-[#00FF00]" />
+                    <p className="text-xs sm:text-sm font-medium text-gray-400 px-4 text-center truncate w-full">{file ? file.name : 'Upload .so file'}</p>
+                    <p className="text-[9px] sm:text-[10px] text-gray-600 uppercase tracking-widest font-bold">Device Storage</p>
                   </div>
                 </div>
 
-                <div className="h-32 border border-[#1A1A1A] rounded-xl p-4 flex flex-col justify-between bg-[#050505]">
-                  <div className="space-y-2">
-                    <label className="text-[10px] uppercase tracking-wider text-gray-500 font-bold">Pattern Scanner (AOB)</label>
+                <div className="h-auto sm:h-40 border border-[#1A1A1A] rounded-2xl p-4 sm:p-5 flex flex-col justify-between bg-[#050505] space-y-4 sm:space-y-0">
+                  <div className="space-y-3">
+                    <label className="text-[9px] sm:text-[10px] uppercase tracking-widest text-gray-500 font-bold">Pattern Scanner (AOB)</label>
                     <div className="flex gap-2">
                       <input 
                         type="text" 
                         placeholder="e.g. 55 48 89 E5 ?? ?? 00"
                         value={options.searchPattern}
                         onChange={(e) => setOptions(prev => ({ ...prev, searchPattern: e.target.value }))}
-                        className="flex-1 bg-[#0A0A0A] border border-[#1A1A1A] rounded-lg px-3 py-2 text-xs focus:outline-none focus:border-[#00FF00]/50 transition-all font-mono"
+                        className="flex-1 bg-[#0A0A0A] border border-[#1A1A1A] rounded-xl px-4 py-3 text-sm focus:outline-none focus:border-[#00FF00]/50 transition-all font-mono h-12"
                       />
                       <button 
                         onClick={startScan}
                         disabled={!file || !options.searchPattern}
-                        className="p-2 bg-[#00FF00] text-black rounded-lg transition-colors disabled:opacity-50"
+                        className="p-3 bg-[#00FF00] text-black rounded-xl transition-all disabled:opacity-50 active:scale-95 min-h-[48px] min-w-[48px] flex items-center justify-center"
                       >
-                        <FileSearch className="w-4 h-4" />
+                        <FileSearch className="w-5 h-5" />
                       </button>
                     </div>
                   </div>
-                  <p className="text-[10px] text-gray-600 italic">Wildcards ?? or ? supported</p>
+                  <p className="text-[9px] sm:text-[10px] text-gray-600 italic">Wildcards ?? or ? supported</p>
                 </div>
               </div>
 
@@ -1217,22 +1213,29 @@ export default function App() {
         )}
 
         {activeTab === 'database' && (
-          <section className="bg-[#0A0A0A] border border-[#1A1A1A] rounded-2xl p-6 space-y-6">
-            <div className="flex items-center justify-between">
+          <section className="bg-[#0A0A0A] border border-[#1A1A1A] rounded-2xl p-4 sm:p-6 space-y-6">
+            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
               <h2 className="text-sm font-bold flex items-center gap-2">
                 <Database className="w-4 h-4 text-[#00FF00]" /> Offset Database
               </h2>
               <div className="flex gap-2">
                 <button 
+                  onClick={() => setActiveTab('updater')}
+                  className="flex-1 sm:flex-none flex items-center justify-center gap-2 px-4 py-2 bg-[#00FF00]/10 hover:bg-[#00FF00]/20 text-[#00FF00] rounded-xl text-[10px] font-black uppercase transition-all border border-[#00FF00]/20 min-h-[44px]"
+                >
+                  <RefreshCw className="w-3.5 h-3.5" />
+                  Auto-Update
+                </button>
+                <button 
                   onClick={() => setSavedEntries([])}
-                  className="p-2 bg-[#1A1A1A] hover:bg-red-500/20 text-red-500 rounded-lg transition-colors"
+                  className="p-3 bg-[#1A1A1A] hover:bg-red-500/20 text-red-500 rounded-xl transition-colors min-h-[44px] min-w-[44px] flex items-center justify-center"
                 >
                   <Trash2 className="w-4 h-4" />
                 </button>
               </div>
             </div>
 
-            <div className="space-y-2 max-h-[400px] overflow-y-auto pr-2">
+            <div className="space-y-2 max-h-[400px] overflow-y-auto pr-1 sm:pr-2 no-scrollbar">
               {savedEntries.length === 0 ? (
                 <div className="text-center py-12 text-gray-600">
                   <Database className="w-12 h-12 mx-auto opacity-10 mb-4" />
@@ -1240,18 +1243,18 @@ export default function App() {
                 </div>
               ) : (
                 savedEntries.map(entry => (
-                  <div key={entry.id} className="p-4 bg-[#050505] border border-[#1A1A1A] rounded-xl flex items-center justify-between">
-                    <div className="space-y-1">
-                      <p className="text-xs font-bold text-[#00FF00]">{entry.name}</p>
-                      <p className="text-[10px] text-gray-500 font-mono">{entry.offset}</p>
+                  <div key={entry.id} className="p-3 sm:p-4 bg-[#050505] border border-[#1A1A1A] rounded-xl flex items-center justify-between gap-4">
+                    <div className="space-y-1 min-w-0">
+                      <p className="text-xs font-bold text-[#00FF00] truncate">{entry.name}</p>
+                      <p className="text-[10px] text-gray-500 font-mono truncate">{entry.offset}</p>
                     </div>
-                    <div className="flex gap-2">
-                      <button className="p-2 hover:bg-[#1A1A1A] rounded-lg text-gray-500">
+                    <div className="flex gap-1 sm:gap-2 flex-shrink-0">
+                      <button className="p-2 sm:p-3 hover:bg-[#1A1A1A] rounded-xl text-gray-500 min-h-[40px] min-w-[40px] flex items-center justify-center">
                         <Tag className="w-4 h-4" />
                       </button>
                       <button 
                         onClick={() => setSavedEntries(prev => prev.filter(e => e.id !== entry.id))}
-                        className="p-2 hover:bg-red-500/20 text-red-500 rounded-lg"
+                        className="p-2 sm:p-3 hover:bg-red-500/20 text-red-500 rounded-xl min-h-[40px] min-w-[40px] flex items-center justify-center"
                       >
                         <Trash2 className="w-4 h-4" />
                       </button>
@@ -1264,8 +1267,8 @@ export default function App() {
         )}
 
         {activeTab === 'workspaces' && (
-          <section className="bg-[#0A0A0A] border border-[#1A1A1A] rounded-2xl p-6 space-y-6">
-            <div className="flex items-center justify-between">
+          <section className="bg-[#0A0A0A] border border-[#1A1A1A] rounded-2xl p-4 sm:p-6 space-y-6">
+            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
               <div className="space-y-1">
                 <h2 className="text-sm font-bold flex items-center gap-2">
                   <Briefcase className="w-4 h-4 text-[#00FF00]" /> Workspaces
@@ -1274,7 +1277,7 @@ export default function App() {
               </div>
               <button 
                 onClick={saveWorkspace}
-                className="px-4 py-2 bg-[#00FF00] text-black rounded-xl text-xs font-bold hover:scale-105 transition-all"
+                className="btn-primary w-full sm:w-auto px-5 py-2.5 text-[11px] h-11"
               >
                 Save Current
               </button>
@@ -1290,13 +1293,13 @@ export default function App() {
                 workspaces.map(ws => (
                   <div key={ws.id} className="p-4 bg-[#050505] border border-[#1A1A1A] rounded-2xl hover:border-[#00FF00]/30 transition-all group">
                     <div className="flex justify-between items-start mb-3">
-                      <div className="space-y-1">
-                        <p className="text-sm font-bold text-white group-hover:text-[#00FF00] transition-colors">{ws.name}</p>
-                        <p className="text-[10px] text-gray-500 font-mono">{ws.fileName || 'Unknown file'}</p>
+                      <div className="space-y-1 min-w-0">
+                        <p className="text-sm font-bold text-white group-hover:text-[#00FF00] transition-colors truncate">{ws.name}</p>
+                        <p className="text-[10px] text-gray-500 font-mono truncate">{ws.fileName || 'Unknown file'}</p>
                       </div>
                       <button 
                         onClick={() => setWorkspaces(prev => prev.filter(w => w.id !== ws.id))}
-                        className="p-2 text-gray-600 hover:text-red-500 transition-colors"
+                        className="p-3 -mr-2 text-gray-600 hover:text-red-500 transition-colors min-h-[44px] min-w-[44px] flex items-center justify-center"
                       >
                         <Trash2 className="w-4 h-4" />
                       </button>
@@ -1307,7 +1310,7 @@ export default function App() {
                       </p>
                       <button 
                         onClick={() => loadWorkspace(ws)}
-                        className="px-3 py-1.5 bg-[#1A1A1A] hover:bg-[#252525] text-[#00FF00] rounded-lg text-[10px] font-bold uppercase tracking-widest transition-all"
+                        className="px-4 py-2 bg-[#1A1A1A] hover:bg-[#252525] text-[#00FF00] rounded-xl text-[11px] font-bold uppercase tracking-widest transition-all min-h-[44px] min-w-[80px]"
                       >
                         Load
                       </button>
@@ -1319,10 +1322,26 @@ export default function App() {
           </section>
         )}
 
+        {activeTab === 'dissector' && (
+          <StructureDissector 
+            onClose={() => setActiveTab('scan')} 
+            baseAddress={options.baseAddress}
+            selectedResult={selectedResult}
+          />
+        )}
+
+        {activeTab === 'updater' && (
+          <AutoOffsetUpdater 
+            onClose={() => setActiveTab('scan')} 
+            savedEntries={savedEntries}
+            onUpdate={setSavedEntries}
+          />
+        )}
+
         {activeTab === 'history' && (
           <div className="space-y-6">
             {/* Recent Files */}
-            <section className="bg-[#0A0A0A] border border-[#1A1A1A] rounded-2xl p-6 space-y-6">
+            <section className="bg-[#0A0A0A] border border-[#1A1A1A] rounded-2xl p-4 sm:p-6 space-y-6">
               <div className="flex items-center justify-between">
                 <div className="space-y-1">
                   <h2 className="text-sm font-bold flex items-center gap-2">
@@ -1332,7 +1351,7 @@ export default function App() {
                 </div>
                 <button 
                   onClick={() => setRecentFiles([])}
-                  className="p-2 bg-[#1A1A1A] hover:bg-red-500/20 text-red-500 rounded-lg transition-colors"
+                  className="p-2 bg-[#1A1A1A] hover:bg-red-500/20 text-red-500 rounded-lg transition-colors min-h-[40px] min-w-[40px] flex items-center justify-center"
                 >
                   <Trash2 className="w-4 h-4" />
                 </button>
@@ -1357,7 +1376,7 @@ export default function App() {
                               setProgress(prev => ({ ...prev, currentChunk: rf.lastChunk || 0 }));
                               setActiveTab('scan');
                             }}
-                            className="text-[9px] text-[#00FF00] hover:underline"
+                            className="text-[9px] text-[#00FF00] hover:underline p-1"
                           >
                             Resume
                           </button>
@@ -1370,7 +1389,7 @@ export default function App() {
             </section>
 
             {/* Scan History */}
-            <section className="bg-[#0A0A0A] border border-[#1A1A1A] rounded-2xl p-6 space-y-6">
+            <section className="bg-[#0A0A0A] border border-[#1A1A1A] rounded-2xl p-4 sm:p-6 space-y-6">
               <div className="flex items-center justify-between">
                 <div className="space-y-1">
                   <h2 className="text-sm font-bold flex items-center gap-2">
@@ -1380,7 +1399,7 @@ export default function App() {
                 </div>
                 <button 
                   onClick={() => setScanHistory([])}
-                  className="p-2 bg-[#1A1A1A] hover:bg-red-500/20 text-red-500 rounded-lg transition-colors"
+                  className="p-2 bg-[#1A1A1A] hover:bg-red-500/20 text-red-500 rounded-lg transition-colors min-h-[40px] min-w-[40px] flex items-center justify-center"
                 >
                   <Trash2 className="w-4 h-4" />
                 </button>
@@ -1394,33 +1413,33 @@ export default function App() {
                   </div>
                 ) : (
                   scanHistory.map(item => (
-                    <div key={item.id} className="p-4 bg-[#050505] border border-[#1A1A1A] rounded-2xl flex items-center justify-between group hover:border-[#00FF00]/20 transition-all">
-                      <div className="flex items-center gap-4">
-                        <div className="w-10 h-10 bg-[#1A1A1A] rounded-xl flex items-center justify-center group-hover:bg-[#00FF00]/10 transition-colors">
+                    <div key={item.id} className="p-3 sm:p-4 bg-[#050505] border border-[#1A1A1A] rounded-2xl flex items-center justify-between group hover:border-[#00FF00]/20 transition-all gap-4">
+                      <div className="flex items-center gap-3 sm:gap-4 min-w-0">
+                        <div className="w-10 h-10 bg-[#1A1A1A] rounded-xl flex items-center justify-center group-hover:bg-[#00FF00]/10 transition-colors flex-shrink-0">
                           <FileText className="w-5 h-5 text-gray-500 group-hover:text-[#00FF00]" />
                         </div>
-                        <div className="space-y-1">
-                          <p className="text-xs font-bold text-gray-300">{item.fileName}</p>
-                          <div className="flex gap-3">
+                        <div className="space-y-1 min-w-0">
+                          <p className="text-xs font-bold text-gray-300 truncate">{item.fileName}</p>
+                          <div className="flex flex-wrap gap-2 sm:gap-3">
                             <span className="text-[9px] text-[#00FF00] font-bold uppercase">{item.resultCount} Results</span>
                             <span className="text-[9px] text-gray-600 uppercase">{new Date(item.timestamp).toLocaleString()}</span>
                           </div>
                         </div>
                       </div>
-                      <div className="flex gap-2">
+                      <div className="flex gap-1 sm:gap-2 flex-shrink-0">
                         <button 
                           onClick={() => {
                             setResults(item.results);
                             setActiveTab('scan');
                           }}
-                          className="p-2 hover:bg-[#1A1A1A] rounded-xl text-[#00FF00]"
+                          className="p-2 sm:p-3 hover:bg-[#1A1A1A] rounded-xl text-[#00FF00] min-h-[40px] min-w-[40px] flex items-center justify-center"
                           title="Reload Results"
                         >
                           <Undo2 className="w-5 h-5" />
                         </button>
                         <button 
                           onClick={() => setScanHistory(prev => prev.filter(h => h.id !== item.id))}
-                          className="p-2 hover:bg-red-500/20 text-red-500 rounded-xl"
+                          className="p-2 sm:p-3 hover:bg-red-500/20 text-red-500 rounded-xl min-h-[40px] min-w-[40px] flex items-center justify-center"
                         >
                           <Trash2 className="w-5 h-5" />
                         </button>
@@ -1774,7 +1793,18 @@ export default function App() {
             </motion.div>
           )}
 
-          <div className="flex items-center justify-between">
+          <div className="flex items-center justify-between sm:hidden">
+            <div className="space-y-1">
+              <h2 className="text-sm font-bold flex items-center gap-2">
+                <Activity className="w-4 h-4 text-[#00FF00]" /> Scan Status
+              </h2>
+              <p className="text-[10px] text-gray-500 uppercase tracking-widest">
+                {progress.isScanning ? (progress.isPaused ? 'Paused' : 'Scanning...') : 'Ready to scan'}
+              </p>
+            </div>
+          </div>
+
+          <div className="hidden sm:flex items-center justify-between">
             <div className="space-y-1">
               <h2 className="text-sm font-bold flex items-center gap-2">
                 <Activity className="w-4 h-4 text-[#00FF00]" /> Scan Status
@@ -1788,7 +1818,7 @@ export default function App() {
                 <button 
                   onClick={startScan}
                   disabled={!file}
-                  className="flex items-center gap-2 bg-[#00FF00] text-black px-6 py-3.5 rounded-2xl font-bold text-sm hover:scale-105 transition-all disabled:opacity-50 disabled:hover:scale-100 shadow-[0_0_20px_rgba(0,255,0,0.2)]"
+                  className="btn-primary"
                 >
                   <Play className="w-4 h-4 fill-current" /> {progress.currentChunk > 0 ? 'Resume Scan' : 'Start Scan'}
                 </button>
@@ -2083,12 +2113,86 @@ export default function App() {
         )}
       </AnimatePresence>
 
+      {/* Modals */}
+      <AnimatePresence>
+        {showHexEditor && selectedResult && (
+          <HexEditor 
+            result={selectedResult} 
+            onClose={() => setShowHexEditor(false)} 
+            baseAddress={options.baseAddress}
+          />
+        )}
+        {showDissector && selectedResult && (
+          <StructureDissector 
+            onClose={() => setShowDissector(false)} 
+            baseAddress={options.baseAddress}
+            selectedResult={selectedResult}
+          />
+        )}
+        {showCodeExporter && (
+          <CodeExporter 
+            results={results} 
+            onClose={() => setShowCodeExporter(false)} 
+            config={exportConfig}
+            onConfigChange={setExportConfig}
+          />
+        )}
+        {showPointerScanner && (
+          <PointerScanner 
+            onClose={() => setShowPointerScanner(false)} 
+            baseAddress={options.baseAddress}
+            onScan={setPointerResults}
+            results={pointerResults}
+          />
+        )}
+      </AnimatePresence>
+
       {/* Footer Branding */}
       <footer className="max-w-4xl mx-auto p-8 text-center space-y-2">
         <p className="text-[10px] text-gray-600 uppercase tracking-[0.3em]">OnceCore Offset Finder v4.0</p>
         <p className="text-[10px] text-gray-700">Ultimate Mobile Reverse Engineering Workspace</p>
       </footer>
       </div>
+      {/* Sticky Bottom Action Button (Mobile Only) */}
+      {activeTab === 'scan' && (
+        <div className="sticky-bottom-action sm:hidden pb-[env(safe-area-inset-bottom)]">
+          <div className="flex gap-3 px-4 py-3 bg-[#0A0A0A]/95 backdrop-blur-md border-t border-[#1A1A1A]">
+            {!progress.isScanning ? (
+              <button 
+                onClick={startScan}
+                disabled={!file}
+                className="btn-primary w-full shadow-[0_0_30px_rgba(0,255,0,0.4)] h-12 text-sm"
+              >
+                <Play className="w-5 h-5 fill-current" /> {progress.currentChunk > 0 ? 'Resume Scan' : 'Start Scan'}
+              </button>
+            ) : (
+              <>
+                {progress.isPaused ? (
+                  <button 
+                    onClick={resumeScan}
+                    className="btn-primary flex-1 h-12 text-sm"
+                  >
+                    <Play className="w-5 h-5 fill-current" /> Resume
+                  </button>
+                ) : (
+                  <button 
+                    onClick={pauseScan}
+                    className="bg-yellow-500 text-black font-bold rounded-xl flex-1 flex items-center justify-center gap-2 min-h-[48px] text-sm active:scale-95"
+                  >
+                    <Pause className="w-5 h-5 fill-current" /> Pause
+                  </button>
+                )}
+                <button 
+                  onClick={stopScan}
+                  className="bg-red-500 text-white font-bold rounded-xl px-6 flex items-center justify-center min-h-[48px] active:scale-95"
+                >
+                  <Square className="w-5 h-5 fill-current" />
+                </button>
+              </>
+            )}
+          </div>
+        </div>
+      )}
     </ErrorBoundary>
   );
 }

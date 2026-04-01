@@ -11,6 +11,32 @@ export interface ScanResult {
   isNew?: boolean;
   frequency?: number;
   length?: number;
+  isPointer?: boolean;
+  pointerTarget?: string;
+  pointerDepth?: number;
+}
+
+export interface PointerResult {
+  id: string;
+  baseOffset: number;
+  offsets: number[];
+  targetAddress: string;
+  currentValue: string;
+  depth: number;
+}
+
+export interface MemoryStructure {
+  offset: number;
+  type: 'int' | 'float' | 'string' | 'pointer' | 'bool';
+  value: any;
+  label: string;
+}
+
+export interface ExportConfig {
+  format: 'cpp' | 'cs' | 'json' | 'txt' | 'ct';
+  includeComments: boolean;
+  prefix: string;
+  namingConvention: 'camelCase' | 'PascalCase' | 'snake_case';
 }
 
 export interface Workspace {
@@ -68,7 +94,7 @@ export interface ScanProgress {
   isPaused: boolean;
   startTime: number;
   endTime?: number;
-  phase?: 'strings' | 'patterns';
+  phase?: 'strings' | 'patterns' | 'pointers';
 }
 
 export type ScanMode = 'safe' | 'balanced' | 'fast';
